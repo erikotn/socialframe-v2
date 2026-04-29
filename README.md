@@ -2,53 +2,88 @@
 
 Browser-based mockup tool voor social media advertenties. Genereert realistische phone-screenshots van LinkedIn, Facebook, Instagram en TikTok ads — direct downloadbaar als PNG of als ZIP met alle varianten tegelijk.
 
-Geen build-step, geen backend. Eén `index.html` die overal te hosten is (GitHub Pages, Vercel, Netlify, of gewoon dubbelklikken).
+**Cloud-bibliotheek**: brand kits en designs worden in Supabase opgeslagen, beveiligd met één gedeeld team-wachtwoord. Iedereen met het wachtwoord ziet en bewerkt dezelfde content.
 
-## Wat is er nieuw t.o.v. v1
+## Features
 
-| Feature | v1 | v2 |
-|---|---|---|
-| Layouts | Feed (LinkedIn-stijl) + Story | LinkedIn / Meta / Instagram (icons + bijschrift) / TikTok |
-| Format-presets | Sliders | Dropdown: 4:5, 1:1, 1.91:1, 9:16 |
-| Brand kits | — | Tab voor klant-presets (avatar, naam, URL, verified) |
-| Image upload | File-picker | File-picker + drag-and-drop + Cmd+V plakken |
-| Export | 1 PNG per keer | ZIP met platforms × formaten × light/dark in één klik |
-| Verified badge | — | Toggle per merk |
-| Like/comment counts | — | Bewerkbaar |
+- **4 platforms** met écht andere layouts: LinkedIn / Meta / Instagram (icons + bijschrift) / TikTok
+- **Format-presets**: 4:5, 1:1, 1.91:1, 9:16
+- **Brand kits** — sla klanten één keer op (avatar, naam, URL, verified-badge), hergebruik overal
+- **Multi-variant export** — checkboxes voor platforms × formaten × light/dark, één klik = ZIP met alles
+- **Drag-and-drop + Cmd+V** voor afbeeldingen
+- **Cloud-sync** via Supabase met password-gate
 
-## Lokaal draaien
+## Setup (alleen één keer per Supabase-project)
 
-Dubbelklik `index.html` of serveer met een eenvoudige static server:
+### 1. Tabellen aanmaken
+
+In Supabase Dashboard → SQL Editor → plak en run de inhoud van [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql).
+
+### 2. Edge Function deployen
+
+**Optie A — via de CLI (aanbevolen)**
 
 ```bash
-python3 -m http.server 8000
-# of
-npx serve
+# Eenmalig: install Supabase CLI als je hem nog niet hebt
+brew install supabase/tap/supabase
+
+# Vanuit deze repo:
+supabase login
+supabase link --project-ref lljnruyhireravkxtxrz
+supabase functions deploy data --no-verify-jwt
 ```
 
-## Deploy
+**Optie B — via dashboard**
 
-**GitHub Pages**: Settings → Pages → Source: `main` branch / root → Save.
-**Vercel**: import repo, framework = "Other", geen build command nodig.
+Supabase Dashboard → Edge Functions → "Deploy a new function" → naam `data` → plak inhoud van [`supabase/functions/data/index.ts`](supabase/functions/data/index.ts) → "Verify JWT" UIT → Deploy.
+
+### 3. Team-wachtwoord instellen
+
+Supabase Dashboard → Edge Functions → **Manage secrets** → New secret:
+- Name: `SHARED_PASSWORD`
+- Value: een wachtwoord naar keuze
+
+Zonder deze secret weigert de Edge Function alle requests met een 500.
+
+### 4. Frontend keys controleren
+
+In `index.html` staan al ingevuld:
+
+```js
+const SUPABASE_URL = 'https://lljnruyhireravkxtxrz.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_...';
+```
+
+Beide zijn public (de publishable key is bedoeld om in de browser te staan). Pas alleen aan als je naar een ander Supabase-project migreert.
+
+### 5. Site deployen
+
+GitHub Pages → Settings → Pages → Source: `main` branch / `/ (root)` → Save.
+Live binnen ~1 minuut op `https://erikotn.github.io/socialframe-v2/`.
+
+Of dubbelklik gewoon `index.html` lokaal — werkt ook prima.
+
+## Hoe het werkt (security-model)
+
+```
+[Browser] → [Edge Function: x-password header] → [Postgres: service-role key]
+```
+
+- De **publishable key** in de frontend mag iedereen lezen — die geeft alléén toegang tot de Edge Function URL
+- De Edge Function checkt het `x-password` header tegen de `SHARED_PASSWORD` secret. Geen match → 401, geen DB-call
+- Postgres-tabellen hebben **Row Level Security aan**, zonder policies → directe REST-calls naar Postgres lukken niet, ook niet als iemand de publishable key misbruikt
+- Alleen de Edge Function kan via de service-role key bij data; alle clients moeten via de password-gate
+
+**Wachtwoord rouleren**: Settings → Edge Functions → Secrets → bewerk `SHARED_PASSWORD`. Bestaande sessies in de browser werken niet meer — gebruikers moeten opnieuw inloggen.
+
+## Beperkingen / verbeterpunten v3
+
+- **Afbeeldingsgrootte**: foto's > 1500 px op de lange zijde worden client-side geresized. Anders zou de POST de Edge Function 6 MB body-limit overschrijden.
+- **Geen audit-trail**: één gedeeld wachtwoord betekent dat je niet kunt zien wie welke kit heeft aangepast. Voor team-tools van 2–5 mensen prima; voor groter zou Supabase Auth (magic link) beter zijn.
+- **Geen offline-mode**: alle data staat in de cloud. Geen netwerk → geen tool.
 
 ## Stack
 
-- React 18 (CDN, geen bundler)
-- Tailwind CSS (CDN)
-- Babel-standalone (in-browser JSX-compile)
-- FileSaver.js (PNG-download)
-- JSZip (batch-export)
-- IndexedDB voor opslag van designs en brand kits (lokaal, in de browser)
-
-## Verschil met v1 (`socialframe`)
-
-v1 doet één LinkedIn-stijl feed-mockup heel goed. v2 generaliseert naar meerdere platforms en voegt workflow-features toe (brand kits, batch export). De code is grotendeels herschreven en deelt geen IndexedDB-store met v1.
-
-## Roadmap
-
-Mogelijke v3-toevoegingen:
-- X / Twitter-layout (avatar-links is structureel anders)
-- Carousel-mode (2–10 swipeable images)
-- OG-import (URL plakken → auto-fill velden)
-- Comment-preview onder de post
-- Side-by-side vergelijking in één export
+- React 18 (CDN) + Tailwind CSS (CDN) + Babel-standalone
+- FileSaver.js voor PNG-download, JSZip voor batch
+- Supabase Postgres + Edge Functions (Deno) als backend

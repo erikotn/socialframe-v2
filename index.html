@@ -96,53 +96,77 @@
             },
         };
 
-        // ============== INDEXEDDB ==============
-        const DB_NAME = 'SocialFrameDB_v2';
+        // ============== CLOUD API ==============
+        // Project: lljnruyhireravkxtxrz.supabase.co
+        // Publishable key is safe to ship to clients — anyone calling the
+        // Edge Function still has to provide the team password (server-side
+        // env var) to read or write data.
+        const SUPABASE_URL = 'https://lljnruyhireravkxtxrz.supabase.co';
+        const SUPABASE_ANON_KEY = 'sb_publishable_bgQYbx8tUxVwKTHlUQmsiA__5lCQymj';
+        const FUNCTION_URL = `${SUPABASE_URL}/functions/v1/data`;
+        const PW_STORAGE_KEY = 'socialframe_pw_v2';
         const DESIGNS_STORE = 'designs';
-        const BRANDS_STORE = 'brandkits';
-        const DB_VERSION = 1;
+        const BRANDS_STORE = 'brand_kits';
 
-        const openDB = () => new Promise((resolve, reject) => {
-            const req = indexedDB.open(DB_NAME, DB_VERSION);
-            req.onupgradeneeded = (e) => {
-                const db = e.target.result;
-                if (!db.objectStoreNames.contains(DESIGNS_STORE)) db.createObjectStore(DESIGNS_STORE, { keyPath: 'id' });
-                if (!db.objectStoreNames.contains(BRANDS_STORE)) db.createObjectStore(BRANDS_STORE, { keyPath: 'id' });
-            };
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error);
+        const apiCall = async (resource, action, payload = null) => {
+            const password = localStorage.getItem(PW_STORAGE_KEY);
+            if (!password) throw new Error('NO_PASSWORD');
+
+            const res = await fetch(FUNCTION_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                    'apikey': SUPABASE_ANON_KEY,
+                    'x-password': password,
+                },
+                body: JSON.stringify({ resource, action, payload }),
+            });
+            if (res.status === 401) {
+                localStorage.removeItem(PW_STORAGE_KEY);
+                throw new Error('WRONG_PASSWORD');
+            }
+            if (!res.ok) {
+                const txt = await res.text().catch(() => '');
+                throw new Error(`API_ERROR_${res.status}: ${txt}`);
+            }
+            return await res.json();
+        };
+
+        // DB ↔ JS naming adapters (Postgres uses snake_case, JS uses camelCase)
+        const toDbDesign = (d) => ({
+            id: String(d.id),
+            platform_id: d.platformId,
+            format_id: d.formatId,
+            content: d.content,
+            style: d.style,
+            date: d.date,
         });
-
-        const dbGetAll = async (storeName) => {
-            try {
-                const db = await openDB();
-                return new Promise((res, rej) => {
-                    const tx = db.transaction(storeName, 'readonly').objectStore(storeName).getAll();
-                    tx.onsuccess = () => res(tx.result.reverse());
-                    tx.onerror = () => rej(tx.error);
-                });
-            } catch (e) { console.error(e); return []; }
-        };
-
-        const dbSave = async (storeName, item) => {
-            const db = await openDB();
-            return new Promise((res, rej) => {
-                const tx = db.transaction(storeName, 'readwrite');
-                tx.objectStore(storeName).put(item);
-                tx.oncomplete = () => res();
-                tx.onerror = () => rej(tx.error);
-            });
-        };
-
-        const dbDelete = async (storeName, id) => {
-            const db = await openDB();
-            return new Promise((res, rej) => {
-                const tx = db.transaction(storeName, 'readwrite');
-                tx.objectStore(storeName).delete(id);
-                tx.oncomplete = () => res();
-                tx.onerror = () => rej(tx.error);
-            });
-        };
+        const fromDbDesign = (d) => ({
+            id: d.id,
+            platformId: d.platform_id,
+            formatId: d.format_id,
+            content: d.content,
+            style: d.style,
+            date: d.date,
+        });
+        const toDbKit = (k) => ({
+            id: String(k.id),
+            name: k.name,
+            sender_name: k.senderName,
+            url: k.url,
+            verified: !!k.verified,
+            avatar: k.avatar,
+        });
+        const fromDbKit = (k) => ({
+            id: k.id,
+            name: k.name,
+            senderName: k.sender_name,
+            url: k.url,
+            verified: !!k.verified,
+            avatar: k.avatar,
+            date: k.created_at ? new Date(k.created_at).toLocaleDateString('nl-NL') : '',
+        });
 
         // ============== HELPERS ==============
         const wrapText = (ctx, text, maxWidth) => {
@@ -177,11 +201,32 @@
             return t + '…';
         };
 
+        // Resize images larger than 1500px on the long side so the JSON
+        // payload stays under Supabase's Edge Function body limit (~6 MB).
+        // Original format is preserved (PNG keeps transparency for logos).
         const fileToImageData = (file) => new Promise((res, rej) => {
             const reader = new FileReader();
             reader.onload = (e) => {
                 const img = new Image();
-                img.onload = () => res({ src: e.target.result, width: img.naturalWidth, height: img.naturalHeight });
+                img.onload = () => {
+                    const MAX = 1500;
+                    let w = img.naturalWidth, h = img.naturalHeight;
+                    const longest = Math.max(w, h);
+                    if (longest <= MAX) {
+                        return res({ src: e.target.result, width: w, height: h });
+                    }
+                    const scale = MAX / longest;
+                    w = Math.round(w * scale);
+                    h = Math.round(h * scale);
+                    const c = document.createElement('canvas');
+                    c.width = w; c.height = h;
+                    const cx = c.getContext('2d');
+                    cx.drawImage(img, 0, 0, w, h);
+                    const isJpeg = file.type === 'image/jpeg' || file.type === 'image/jpg';
+                    const mime = isJpeg ? 'image/jpeg' : 'image/png';
+                    const compressed = isJpeg ? c.toDataURL(mime, 0.85) : c.toDataURL(mime);
+                    res({ src: compressed, width: w, height: h });
+                };
                 img.onerror = rej;
                 img.src = e.target.result;
             };
@@ -755,8 +800,77 @@
             );
         }
 
+        // ============== PASSWORD GATE ==============
+        function PasswordGate({ onAuthed }) {
+            const [pw, setPw] = useState('');
+            const [error, setError] = useState('');
+            const [loading, setLoading] = useState(false);
+
+            const submit = async (e) => {
+                e.preventDefault();
+                if (!pw) return;
+                setLoading(true);
+                setError('');
+                localStorage.setItem(PW_STORAGE_KEY, pw);
+                try {
+                    await apiCall('designs', 'list');
+                    onAuthed();
+                } catch (err) {
+                    localStorage.removeItem(PW_STORAGE_KEY);
+                    if (err.message === 'WRONG_PASSWORD') setError('Onjuist wachtwoord.');
+                    else setError('Kan geen verbinding maken: ' + err.message);
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="fixed inset-0 bg-dark-900 flex items-center justify-center z-50 p-4">
+                    <form onSubmit={submit} className="bg-dark-800 p-8 rounded-2xl border border-white/10 w-full max-w-sm space-y-4 shadow-2xl">
+                        <div>
+                            <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">SocialFrame v2</h1>
+                            <p className="text-sm text-gray-400 mt-1">Voer het team-wachtwoord in om bij de cloud-bibliotheek te komen.</p>
+                        </div>
+                        <input
+                            type="password"
+                            value={pw}
+                            onChange={e => setPw(e.target.value)}
+                            className="w-full bg-dark-900 border border-gray-700 rounded px-3 py-2.5 text-sm focus:border-blue-500 outline-none"
+                            placeholder="Wachtwoord"
+                            autoFocus
+                        />
+                        {error && <p className="text-xs text-red-400">{error}</p>}
+                        <button type="submit" disabled={loading || !pw}
+                            className="w-full bg-white text-black font-bold py-2.5 rounded-lg hover:bg-gray-200 disabled:opacity-50">
+                            {loading ? 'Verifiëren…' : 'Inloggen'}
+                        </button>
+                    </form>
+                </div>
+            );
+        }
+
         // ============== APP ==============
         function App() {
+            const [authed, setAuthed] = useState(false);
+            const [authChecking, setAuthChecking] = useState(true);
+
+            useEffect(() => {
+                const pw = localStorage.getItem(PW_STORAGE_KEY);
+                if (!pw) { setAuthChecking(false); return; }
+                // Verify password is still valid
+                apiCall('designs', 'list')
+                    .then(() => { setAuthed(true); setAuthChecking(false); })
+                    .catch(() => { setAuthChecking(false); });
+            }, []);
+
+            if (authChecking) {
+                return <div className="h-screen flex items-center justify-center text-gray-400 text-sm">Verbinding maken…</div>;
+            }
+            if (!authed) return <PasswordGate onAuthed={() => setAuthed(true)} />;
+
+            return <Workspace onLogout={() => { localStorage.removeItem(PW_STORAGE_KEY); setAuthed(false); }} />;
+        }
+
+        function Workspace({ onLogout }) {
             const [platformId, setPlatformId] = useState('linkedin');
             const [formatId, setFormatId] = useState('feed-4-5');
             const [sidebarTab, setSidebarTab] = useState('edit');
@@ -797,12 +911,19 @@
                 modes: { light: true, dark: false }
             });
 
-            // Load saved data
+            // Load saved data from Supabase
             useEffect(() => {
                 (async () => {
-                    const [d, b] = await Promise.all([dbGetAll(DESIGNS_STORE), dbGetAll(BRANDS_STORE)]);
-                    setSavedDesigns(d);
-                    setBrandKits(b);
+                    try {
+                        const [d, b] = await Promise.all([
+                            apiCall('designs', 'list'),
+                            apiCall('brand_kits', 'list'),
+                        ]);
+                        setSavedDesigns(d.map(fromDbDesign));
+                        setBrandKits(b.map(fromDbKit));
+                    } catch (e) {
+                        console.error('Load failed:', e);
+                    }
                 })();
             }, []);
 
@@ -862,7 +983,7 @@
                 if (!FORMATS[id].isStory && PLATFORMS[platformId].layout === 'story') setPlatformId('instagram');
             };
 
-            // Brand kits
+            // Brand kits (cloud)
             const saveBrandKit = async () => {
                 const kitName = prompt('Naam voor deze brand kit (bv. Cosis):');
                 if (!kitName) return;
@@ -873,10 +994,12 @@
                     senderName: content.name,
                     url: content.url,
                     verified: content.verified,
-                    date: new Date().toLocaleDateString()
                 };
-                await dbSave(BRANDS_STORE, kit);
-                setBrandKits(await dbGetAll(BRANDS_STORE));
+                try {
+                    await apiCall('brand_kits', 'save', toDbKit(kit));
+                    const list = await apiCall('brand_kits', 'list');
+                    setBrandKits(list.map(fromDbKit));
+                } catch (e) { alert('Opslaan mislukt: ' + e.message); }
             };
 
             const loadBrandKit = (kit) => {
@@ -891,20 +1014,26 @@
 
             const deleteBrandKit = async (id, e) => {
                 e.stopPropagation();
-                await dbDelete(BRANDS_STORE, id);
-                setBrandKits(await dbGetAll(BRANDS_STORE));
+                try {
+                    await apiCall('brand_kits', 'delete', { id: String(id) });
+                    const list = await apiCall('brand_kits', 'list');
+                    setBrandKits(list.map(fromDbKit));
+                } catch (err) { alert('Verwijderen mislukt: ' + err.message); }
             };
 
-            // Designs library
+            // Designs library (cloud)
             const saveDesign = async () => {
                 const newDesign = {
                     id: Date.now(),
                     date: new Date().toLocaleDateString() + ' ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                     platformId, formatId, content, style
                 };
-                await dbSave(DESIGNS_STORE, newDesign);
-                setSavedDesigns(await dbGetAll(DESIGNS_STORE));
-                setSidebarTab('library');
+                try {
+                    await apiCall('designs', 'save', toDbDesign(newDesign));
+                    const list = await apiCall('designs', 'list');
+                    setSavedDesigns(list.map(fromDbDesign));
+                    setSidebarTab('library');
+                } catch (e) { alert('Opslaan mislukt: ' + e.message); }
             };
 
             const loadDesign = (d) => {
@@ -917,8 +1046,11 @@
 
             const deleteDesign = async (id, e) => {
                 e.stopPropagation();
-                await dbDelete(DESIGNS_STORE, id);
-                setSavedDesigns(await dbGetAll(DESIGNS_STORE));
+                try {
+                    await apiCall('designs', 'delete', { id: String(id) });
+                    const list = await apiCall('designs', 'list');
+                    setSavedDesigns(list.map(fromDbDesign));
+                } catch (err) { alert('Verwijderen mislukt: ' + err.message); }
             };
 
             // Layout metrics for current preview
@@ -1091,9 +1223,14 @@
             return (
                 <div className="flex flex-col md:flex-row h-screen">
                     <aside className="w-full md:w-96 bg-dark-800 border-r border-white/10 flex flex-col z-20 shadow-2xl">
-                        <div className="p-5 border-b border-white/10 flex-shrink-0">
-                            <h1 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">SocialFrame v2</h1>
-                            <p className="text-[11px] text-gray-400 mt-1">Multi-platform • Brand kits • Batch export</p>
+                        <div className="p-5 border-b border-white/10 flex-shrink-0 flex items-start justify-between gap-2">
+                            <div>
+                                <h1 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">SocialFrame v2</h1>
+                                <p className="text-[11px] text-gray-400 mt-1">Cloud-bibliotheek · gedeeld team</p>
+                            </div>
+                            <button onClick={onLogout} className="text-[11px] text-gray-500 hover:text-gray-300 px-2 py-1 -mr-2 -mt-1">
+                                Uitloggen
+                            </button>
                         </div>
 
                         <div className="flex border-b border-white/10 flex-shrink-0">
