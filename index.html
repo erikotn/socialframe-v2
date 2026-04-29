@@ -1,0 +1,1411 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SocialFrame v2 — Multi-platform Mockup Tool</title>
+
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #18181b; }
+        ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+        input[type="range"]::-webkit-slider-runnable-track { background: #27272a; height: 4px; border-radius: 2px; }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none; margin-top: -6px;
+            height: 16px; width: 16px; background: #3b82f6; border-radius: 50%;
+            cursor: pointer; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
+        }
+        .checkerboard {
+            background-color: #09090b;
+            background-image:
+                linear-gradient(45deg, #18181b 25%, transparent 25%),
+                linear-gradient(-45deg, #18181b 25%, transparent 25%),
+                linear-gradient(45deg, transparent 75%, #18181b 75%),
+                linear-gradient(-45deg, transparent 75%, #18181b 75%);
+            background-size: 20px 20px;
+        }
+        input[type="file"] { display: none; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
+        .dropzone-active { box-shadow: inset 0 0 0 3px #3b82f6; }
+    </style>
+
+    <script>
+        tailwind.config = {
+            theme: { extend: { colors: { dark: { 900: '#09090b', 800: '#18181b', 700: '#27272a' } } } }
+        }
+    </script>
+</head>
+<body class="bg-dark-900 text-white h-screen overflow-hidden">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useCallback } = React;
+
+        // ============== CONSTANTS ==============
+        const DEFAULT_IMG_ASPECT = 1350 / 1080;
+
+        const FORMATS = {
+            'feed-4-5':   { name: 'Feed Portrait (4:5)',     imgAspect: 1350 / 1080 },
+            'feed-1-1':   { name: 'Feed Square (1:1)',       imgAspect: 1 },
+            'feed-1-91':  { name: 'Feed Landscape (1.91:1)', imgAspect: 1 / 1.91 },
+            'story-9-16': { name: 'Story / Reel (9:16)',     imgAspect: 16 / 9, isStory: true },
+        };
+
+        const PLATFORMS = {
+            linkedin: {
+                name: 'LinkedIn',
+                sponsorLabel: 'Gesponsord',
+                avatarShape: 'square',
+                layout: 'feed-cta',
+                buttonText: 'Lees meer',
+                buttonStyle: { bg: 'transparent', text: '#0077b5', border: '#0077b5' },
+            },
+            meta: {
+                name: 'Facebook',
+                sponsorLabel: 'Gesponsord',
+                avatarShape: 'circle',
+                layout: 'feed-cta',
+                buttonText: 'Meer informatie',
+                buttonStyle: { bg: '#e4e4e7', text: '#000', border: 'transparent' },
+            },
+            instagram: {
+                name: 'Instagram',
+                sponsorLabel: 'Gesponsord',
+                avatarShape: 'circle',
+                layout: 'feed-icons',
+                buttonText: 'Meer bekijken',
+                buttonStyle: { bg: '#0095f6', text: '#fff', border: 'transparent' },
+            },
+            tiktok: {
+                name: 'TikTok',
+                sponsorLabel: 'Gesponsord',
+                avatarShape: 'circle',
+                layout: 'story',
+                buttonText: 'Meer informatie',
+                buttonStyle: { bg: '#fff', text: '#000', border: 'transparent' },
+            },
+        };
+
+        // ============== INDEXEDDB ==============
+        const DB_NAME = 'SocialFrameDB_v2';
+        const DESIGNS_STORE = 'designs';
+        const BRANDS_STORE = 'brandkits';
+        const DB_VERSION = 1;
+
+        const openDB = () => new Promise((resolve, reject) => {
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(DESIGNS_STORE)) db.createObjectStore(DESIGNS_STORE, { keyPath: 'id' });
+                if (!db.objectStoreNames.contains(BRANDS_STORE)) db.createObjectStore(BRANDS_STORE, { keyPath: 'id' });
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+
+        const dbGetAll = async (storeName) => {
+            try {
+                const db = await openDB();
+                return new Promise((res, rej) => {
+                    const tx = db.transaction(storeName, 'readonly').objectStore(storeName).getAll();
+                    tx.onsuccess = () => res(tx.result.reverse());
+                    tx.onerror = () => rej(tx.error);
+                });
+            } catch (e) { console.error(e); return []; }
+        };
+
+        const dbSave = async (storeName, item) => {
+            const db = await openDB();
+            return new Promise((res, rej) => {
+                const tx = db.transaction(storeName, 'readwrite');
+                tx.objectStore(storeName).put(item);
+                tx.oncomplete = () => res();
+                tx.onerror = () => rej(tx.error);
+            });
+        };
+
+        const dbDelete = async (storeName, id) => {
+            const db = await openDB();
+            return new Promise((res, rej) => {
+                const tx = db.transaction(storeName, 'readwrite');
+                tx.objectStore(storeName).delete(id);
+                tx.oncomplete = () => res();
+                tx.onerror = () => rej(tx.error);
+            });
+        };
+
+        // ============== HELPERS ==============
+        const wrapText = (ctx, text, maxWidth) => {
+            const paragraphs = String(text ?? '').split('\n');
+            const lines = [];
+            for (const para of paragraphs) {
+                if (para === '') { lines.push(''); continue; }
+                const words = para.split(' ');
+                let line = words[0] ?? '';
+                for (let i = 1; i < words.length; i++) {
+                    const w = words[i];
+                    if (ctx.measureText(line + ' ' + w).width < maxWidth) line += ' ' + w;
+                    else { lines.push(line); line = w; }
+                }
+                lines.push(line);
+            }
+            return lines;
+        };
+
+        const loadImg = (src) => new Promise((res, rej) => {
+            const i = new Image();
+            i.onload = () => res(i);
+            i.onerror = rej;
+            i.src = src;
+        });
+
+        const truncateToWidth = (ctx, text, maxW, fontStr) => {
+            ctx.font = fontStr;
+            if (ctx.measureText(text).width <= maxW) return text;
+            let t = text;
+            while (t.length > 0 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+            return t + '…';
+        };
+
+        const fileToImageData = (file) => new Promise((res, rej) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => res({ src: e.target.result, width: img.naturalWidth, height: img.naturalHeight });
+                img.onerror = rej;
+                img.src = e.target.result;
+            };
+            reader.onerror = rej;
+            reader.readAsDataURL(file);
+        });
+
+        // ============== CANVAS ICON DRAWING ==============
+        const drawHeart = (ctx, cx, cy, r, color, filled = true) => {
+            ctx.save();
+            ctx.fillStyle = filled ? color : 'transparent';
+            ctx.strokeStyle = color;
+            ctx.lineWidth = r * 0.18;
+            const tx = cx, ty = cy - r * 0.3;
+            ctx.beginPath();
+            ctx.moveTo(tx, ty + r * 0.4);
+            ctx.bezierCurveTo(tx, ty, tx - r, ty, tx - r, ty + r * 0.6);
+            ctx.bezierCurveTo(tx - r, ty + r, tx, ty + r * 1.5, tx, ty + r * 1.7);
+            ctx.bezierCurveTo(tx, ty + r * 1.5, tx + r, ty + r, tx + r, ty + r * 0.6);
+            ctx.bezierCurveTo(tx + r, ty, tx, ty, tx, ty + r * 0.4);
+            ctx.closePath();
+            if (filled) ctx.fill(); else ctx.stroke();
+            ctx.restore();
+        };
+
+        const drawComment = (ctx, cx, cy, r, color) => {
+            ctx.save();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = r * 0.18;
+            ctx.beginPath();
+            ctx.arc(cx, cy, r, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(cx - r * 0.3, cy + r * 0.4);
+            ctx.lineTo(cx - r * 0.5, cy + r * 1.3);
+            ctx.lineTo(cx + r * 0.4, cy + r * 0.7);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        };
+
+        const drawShare = (ctx, cx, cy, r, color) => {
+            ctx.save();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = r * 0.18;
+            ctx.lineJoin = 'round';
+            ctx.beginPath();
+            ctx.moveTo(cx + r, cy - r);
+            ctx.lineTo(cx - r, cy);
+            ctx.lineTo(cx + r * 0.1, cy + r * 0.3);
+            ctx.lineTo(cx + r, cy - r);
+            ctx.closePath();
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(cx + r * 0.1, cy + r * 0.3);
+            ctx.lineTo(cx + r * 0.3, cy + r);
+            ctx.stroke();
+            ctx.restore();
+        };
+
+        const drawBookmark = (ctx, cx, cy, r, color) => {
+            ctx.save();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = r * 0.18;
+            ctx.lineJoin = 'round';
+            ctx.beginPath();
+            ctx.moveTo(cx - r * 0.7, cy - r);
+            ctx.lineTo(cx - r * 0.7, cy + r);
+            ctx.lineTo(cx, cy + r * 0.4);
+            ctx.lineTo(cx + r * 0.7, cy + r);
+            ctx.lineTo(cx + r * 0.7, cy - r);
+            ctx.closePath();
+            ctx.stroke();
+            ctx.restore();
+        };
+
+        const drawVerified = (ctx, x, y, r) => {
+            ctx.save();
+            ctx.fillStyle = '#1d9bf0';
+            ctx.beginPath();
+            ctx.arc(x + r, y + r, r, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = r * 0.32;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.beginPath();
+            ctx.moveTo(x + r * 0.55, y + r * 1.0);
+            ctx.lineTo(x + r * 0.9, y + r * 1.35);
+            ctx.lineTo(x + r * 1.45, y + r * 0.7);
+            ctx.stroke();
+            ctx.restore();
+        };
+
+        // ============== ICONS (REACT) ==============
+        const Icons = {
+            Download: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>,
+            User: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+            Image: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>,
+            Save: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>,
+            Trash: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>,
+            Heart: ({ size = 22, fill = 'none' }) => <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor" strokeWidth="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>,
+            Comment: ({ size = 22 }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>,
+            Share: ({ size = 22 }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>,
+            Bookmark: ({ size = 22 }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>,
+            Verified: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="#1d9bf0"><path d="M22.25 12c0-1.43-.88-2.67-2.19-3.34.46-1.39.2-2.9-.81-3.91s-2.52-1.27-3.91-.81c-.66-1.31-1.91-2.19-3.34-2.19s-2.67.88-3.33 2.19c-1.4-.46-2.91-.2-3.92.81s-1.26 2.52-.8 3.91c-1.31.67-2.2 1.91-2.2 3.34s.89 2.67 2.2 3.34c-.46 1.39-.21 2.9.8 3.91s2.52 1.26 3.91.81c.67 1.31 1.91 2.19 3.34 2.19s2.68-.88 3.34-2.19c1.39.45 2.9.2 3.91-.81s1.27-2.52.81-3.91c1.31-.67 2.19-1.91 2.19-3.34zm-11.71 4.2L6.8 12.46l1.41-1.42 2.26 2.26 4.8-5.23 1.47 1.36-6.2 6.77z"/></svg>,
+            Plus: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg>,
+            Briefcase: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>,
+            Package: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="16.5" x2="7.5" y1="9.4" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" x2="12" y1="22.08" y2="12"/></svg>,
+        };
+
+        // ============== LAYOUT METRICS ==============
+        // Returns { phoneHeight, imgHeight } for given layout config
+        function computeMetrics({ platform, format, content, phoneW, sliderH }) {
+            if (platform.layout === 'story') {
+                return { phoneHeight: sliderH, imgHeight: sliderH };
+            }
+
+            const imgAspect = content.mainImage
+                ? content.mainImage.height / content.mainImage.width
+                : format.imgAspect;
+            const imgH = phoneW * imgAspect;
+
+            const measureCanvas = document.createElement('canvas');
+            const mctx = measureCanvas.getContext('2d');
+            const safePadX = 20, lineHeight = 20, fontSize = 14;
+
+            if (platform.layout === 'feed-cta') {
+                const topSpace = 50, headerOffset = 70, gap = 10, footerH = 80, buffer = 4;
+                mctx.font = `400 ${fontSize}px "Inter", sans-serif`;
+                const lines = wrapText(mctx, content.text, phoneW - safePadX * 2);
+                const textH = lines.length * lineHeight;
+                const contentH = topSpace + headerOffset + textH + gap + imgH + footerH + buffer;
+                return { phoneHeight: Math.max(sliderH, Math.ceil(contentH)), imgHeight: imgH };
+            }
+
+            if (platform.layout === 'feed-icons') {
+                const topSpace = 50, headerOffset = 60, iconRowH = 50, likesH = 22, gap = 6, buffer = 12;
+                mctx.font = `400 12px "Inter", sans-serif`;
+                const captionLines = wrapText(mctx, content.name + ' ' + content.text, phoneW - safePadX * 2);
+                const captionH = captionLines.length * 18;
+                const contentH = topSpace + headerOffset + imgH + iconRowH + likesH + gap + captionH + buffer;
+                return { phoneHeight: Math.max(sliderH, Math.ceil(contentH)), imgHeight: imgH };
+            }
+
+            return { phoneHeight: sliderH, imgHeight: imgH };
+        }
+
+        // ============== CANVAS RENDERERS ==============
+        async function renderFeedCTA(ctx, p) {
+            const { scale, phoneX, phoneY, phoneW, safeX, safeW, content, platform, darkMode, imgH, fontBold, fontReg } = p;
+            let currentY = p.currentY;
+
+            const headerOffset = 70 * scale;
+            const avatarSize = 40 * scale;
+            const mainImg = content.mainImage ? await loadImg(content.mainImage.src) : null;
+            const avatarImg = content.avatar ? await loadImg(content.avatar.src) : null;
+
+            // Avatar
+            ctx.save();
+            ctx.beginPath();
+            if (platform.avatarShape === 'circle') {
+                ctx.arc(safeX + avatarSize / 2, currentY + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2);
+            } else {
+                const r = 8 * scale;
+                if (ctx.roundRect) ctx.roundRect(safeX, currentY, avatarSize, avatarSize, r);
+                else ctx.rect(safeX, currentY, avatarSize, avatarSize);
+            }
+            ctx.closePath();
+            ctx.clip();
+            if (avatarImg) ctx.drawImage(avatarImg, safeX, currentY, avatarSize, avatarSize);
+            else { ctx.fillStyle = '#ccc'; ctx.fillRect(safeX, currentY, avatarSize, avatarSize); }
+            ctx.restore();
+
+            // Name + verified
+            ctx.fillStyle = darkMode ? '#fff' : '#000';
+            ctx.font = fontBold(14);
+            ctx.textAlign = 'left';
+            const nameX = safeX + avatarSize + 10 * scale;
+            ctx.fillText(content.name, nameX, currentY + 15 * scale);
+            if (content.verified) {
+                const nameW = ctx.measureText(content.name).width;
+                drawVerified(ctx, nameX + nameW + 4 * scale, currentY + 4 * scale, 7 * scale);
+            }
+
+            ctx.fillStyle = '#a1a1aa';
+            ctx.font = fontReg(11);
+            ctx.fillText(`${platform.sponsorLabel} • 2u`, nameX, currentY + 32 * scale);
+
+            ctx.fillStyle = darkMode ? '#fff' : '#000';
+            ctx.font = fontBold(14);
+            ctx.fillText('...', phoneX + phoneW - 30 * scale, currentY + 20 * scale);
+
+            currentY += headerOffset;
+
+            // Post text
+            ctx.fillStyle = darkMode ? '#fff' : '#18181b';
+            ctx.font = fontReg(14);
+            const lineHeight = 20 * scale;
+            const textLines = wrapText(ctx, content.text, safeW);
+            for (const ln of textLines) {
+                ctx.fillText(ln, safeX, currentY);
+                currentY += lineHeight;
+            }
+            currentY += 10 * scale;
+
+            // Image
+            if (mainImg) ctx.drawImage(mainImg, phoneX, currentY, phoneW, imgH);
+            else { ctx.fillStyle = '#27272a'; ctx.fillRect(phoneX, currentY, phoneW, imgH); }
+            currentY += imgH;
+
+            // Footer block
+            const footerH = 80 * scale;
+            ctx.fillStyle = darkMode ? '#27272a' : '#f4f4f5';
+            ctx.fillRect(phoneX, currentY, phoneW, footerH);
+
+            // Button (auto-sized to text)
+            ctx.font = fontBold(12);
+            const btnPadX = 12 * scale;
+            const btnTextW = ctx.measureText(content.buttonText).width;
+            const btnW = btnTextW + btnPadX * 2;
+            const btnH = 32 * scale;
+            const btnX = phoneX + phoneW - 20 * scale - btnW;
+            const btnY = currentY + (footerH - btnH) / 2;
+
+            const textMaxW = btnX - safeX - 12 * scale;
+
+            // Headline + URL with truncation
+            ctx.fillStyle = darkMode ? '#fff' : '#000';
+            ctx.textAlign = 'left';
+            ctx.fillText(truncateToWidth(ctx, content.headline, textMaxW, fontBold(13)), safeX, currentY + 30 * scale);
+            ctx.fillStyle = '#71717a';
+            ctx.fillText(truncateToWidth(ctx, content.url, textMaxW, fontReg(11)), safeX, currentY + 50 * scale);
+
+            // Button background
+            const bs = platform.buttonStyle;
+            if (bs.bg !== 'transparent') {
+                ctx.fillStyle = bs.bg;
+                ctx.beginPath();
+                if (ctx.roundRect) ctx.roundRect(btnX, btnY, btnW, btnH, 4 * scale);
+                else ctx.rect(btnX, btnY, btnW, btnH);
+                ctx.fill();
+            }
+            if (bs.border !== 'transparent') {
+                ctx.strokeStyle = bs.border;
+                ctx.lineWidth = 1.5 * scale;
+                ctx.beginPath();
+                if (ctx.roundRect) ctx.roundRect(btnX, btnY, btnW, btnH, 4 * scale);
+                else ctx.rect(btnX, btnY, btnW, btnH);
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = bs.text;
+            ctx.font = fontBold(12);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(content.buttonText, btnX + btnW / 2, btnY + btnH / 2);
+            ctx.textBaseline = 'alphabetic';
+        }
+
+        async function renderFeedIcons(ctx, p) {
+            const { scale, phoneX, phoneY, phoneW, safeX, safeW, content, platform, darkMode, imgH, fontBold, fontReg } = p;
+            let currentY = p.currentY;
+
+            const headerOffset = 60 * scale;
+            const avatarSize = 36 * scale;
+            const mainImg = content.mainImage ? await loadImg(content.mainImage.src) : null;
+            const avatarImg = content.avatar ? await loadImg(content.avatar.src) : null;
+
+            // Header avatar
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(safeX + avatarSize / 2, currentY + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2);
+            ctx.closePath();
+            ctx.clip();
+            if (avatarImg) ctx.drawImage(avatarImg, safeX, currentY, avatarSize, avatarSize);
+            else { ctx.fillStyle = '#ccc'; ctx.fillRect(safeX, currentY, avatarSize, avatarSize); }
+            ctx.restore();
+
+            // Name + verified
+            ctx.fillStyle = darkMode ? '#fff' : '#000';
+            ctx.font = fontBold(13);
+            ctx.textAlign = 'left';
+            const nameX = safeX + avatarSize + 10 * scale;
+            ctx.fillText(content.name, nameX, currentY + 14 * scale);
+            if (content.verified) {
+                const nameW = ctx.measureText(content.name).width;
+                drawVerified(ctx, nameX + nameW + 4 * scale, currentY + 3 * scale, 6 * scale);
+            }
+
+            ctx.fillStyle = '#a1a1aa';
+            ctx.font = fontReg(10);
+            ctx.fillText(platform.sponsorLabel, nameX, currentY + 28 * scale);
+
+            ctx.fillStyle = darkMode ? '#fff' : '#000';
+            ctx.font = fontBold(14);
+            ctx.fillText('...', phoneX + phoneW - 30 * scale, currentY + 18 * scale);
+
+            currentY += headerOffset;
+
+            // Image (full width, height per format)
+            if (mainImg) ctx.drawImage(mainImg, phoneX, currentY, phoneW, imgH);
+            else { ctx.fillStyle = '#27272a'; ctx.fillRect(phoneX, currentY, phoneW, imgH); }
+            currentY += imgH;
+
+            // Icon row
+            const iconRowH = 50 * scale;
+            const iconY = currentY + iconRowH / 2;
+            const iconColor = darkMode ? '#fff' : '#000';
+            const iconR = 11 * scale;
+
+            drawHeart(ctx, safeX + iconR, iconY, iconR, iconColor, false);
+            drawComment(ctx, safeX + iconR + 30 * scale, iconY, iconR, iconColor);
+            drawShare(ctx, safeX + iconR + 60 * scale, iconY, iconR, iconColor);
+            drawBookmark(ctx, phoneX + phoneW - 22 * scale, iconY, iconR, iconColor);
+
+            currentY += iconRowH;
+
+            // Likes count
+            ctx.fillStyle = darkMode ? '#fff' : '#000';
+            ctx.font = fontBold(12);
+            ctx.textAlign = 'left';
+            ctx.fillText(`${(content.likes ?? 0).toLocaleString('nl-NL')} vind-ik-leuks`, safeX, currentY + 8 * scale);
+            currentY += 22 * scale;
+
+            // Caption (name bold + text)
+            ctx.font = fontReg(12);
+            const capLineH = 18 * scale;
+
+            // First line: name bold + text continuation
+            ctx.font = fontBold(12);
+            const nameWidth = ctx.measureText(content.name).width;
+            ctx.fillStyle = darkMode ? '#fff' : '#000';
+            ctx.fillText(content.name, safeX, currentY);
+            const remainingX = safeX + nameWidth + (4 * scale);
+            const remainingW = phoneW - 40 * scale - nameWidth - (4 * scale);
+
+            ctx.font = fontReg(12);
+            // Wrap remaining text on first line + subsequent full-width lines
+            const words = content.text.split(' ');
+            let firstLine = '';
+            let i = 0;
+            for (; i < words.length; i++) {
+                const test = firstLine ? firstLine + ' ' + words[i] : words[i];
+                if (ctx.measureText(test).width > remainingW) break;
+                firstLine = test;
+            }
+            ctx.fillText(firstLine, remainingX, currentY);
+            currentY += capLineH;
+
+            // Remaining words wrap to safeW
+            if (i < words.length) {
+                const rest = words.slice(i).join(' ');
+                const restLines = wrapText(ctx, rest, safeW);
+                for (const ln of restLines) {
+                    ctx.fillText(ln, safeX, currentY);
+                    currentY += capLineH;
+                }
+            }
+
+            // "Bekijk alle X reacties" (if any)
+            if ((content.comments ?? 0) > 0) {
+                currentY += 2 * scale;
+                ctx.fillStyle = '#71717a';
+                ctx.font = fontReg(11);
+                ctx.fillText(`Bekijk alle ${content.comments} reacties`, safeX, currentY);
+            }
+        }
+
+        async function renderStory(ctx, p) {
+            const { scale, phoneX, phoneY, phoneW, phoneH, safeX, content, platform, fontBold, fontReg } = p;
+            const mainImg = content.mainImage ? await loadImg(content.mainImage.src) : null;
+            const avatarImg = content.avatar ? await loadImg(content.avatar.src) : null;
+
+            if (mainImg) {
+                const ratio = mainImg.width / mainImg.height;
+                const targetRatio = phoneW / phoneH;
+                let sw, sh, sx, sy;
+                if (ratio > targetRatio) { sh = mainImg.height; sw = sh * targetRatio; sy = 0; sx = (mainImg.width - sw) / 2; }
+                else { sw = mainImg.width; sh = sw / targetRatio; sx = 0; sy = (mainImg.height - sh) / 2; }
+                ctx.drawImage(mainImg, sx, sy, sw, sh, phoneX, phoneY, phoneW, phoneH);
+            } else {
+                ctx.fillStyle = '#27272a';
+                ctx.fillRect(phoneX, phoneY, phoneW, phoneH);
+            }
+
+            // Bottom gradient overlay
+            const grd = ctx.createLinearGradient(0, phoneY + phoneH / 2, 0, phoneY + phoneH);
+            grd.addColorStop(0, 'transparent');
+            grd.addColorStop(1, 'rgba(0,0,0,0.8)');
+            ctx.fillStyle = grd;
+            ctx.fillRect(phoneX, phoneY + phoneH / 2, phoneW, phoneH / 2);
+
+            // Top: avatar + name
+            const avatarSize = 32 * scale;
+            const topY = phoneY + 50 * scale;
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(safeX + avatarSize / 2, topY + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2);
+            ctx.clip();
+            if (avatarImg) ctx.drawImage(avatarImg, safeX, topY, avatarSize, avatarSize);
+            else { ctx.fillStyle = '#ccc'; ctx.fillRect(safeX, topY, avatarSize, avatarSize); }
+            ctx.restore();
+
+            ctx.fillStyle = '#fff';
+            ctx.font = fontBold(13);
+            ctx.textAlign = 'left';
+            const nameX = safeX + avatarSize + 10 * scale;
+            ctx.fillText(content.name, nameX, topY + 20 * scale);
+            if (content.verified) {
+                const nameW = ctx.measureText(content.name).width;
+                drawVerified(ctx, nameX + nameW + 4 * scale, topY + 9 * scale, 6 * scale);
+            }
+            ctx.font = fontReg(11);
+            ctx.fillStyle = 'rgba(255,255,255,0.85)';
+            ctx.fillText(platform.sponsorLabel, nameX, topY + 36 * scale);
+
+            // Side icons
+            const iconX = phoneX + phoneW - 30 * scale;
+            const iconYStart = phoneY + phoneH - 160 * scale;
+            const iconGap = 50 * scale;
+            const iconR = 12 * scale;
+
+            drawHeart(ctx, iconX, iconYStart, iconR, '#fff', false);
+            ctx.fillStyle = '#fff';
+            ctx.font = fontReg(11);
+            ctx.textAlign = 'center';
+            ctx.fillText((content.likes ?? 0).toLocaleString('nl-NL'), iconX, iconYStart + 22 * scale);
+
+            drawComment(ctx, iconX, iconYStart + iconGap, iconR, '#fff');
+            ctx.fillText((content.comments ?? 0).toString(), iconX, iconYStart + iconGap + 22 * scale);
+
+            drawShare(ctx, iconX, iconYStart + iconGap * 2, iconR, '#fff');
+            ctx.fillText((content.shares ?? 0).toString(), iconX, iconYStart + iconGap * 2 + 22 * scale);
+
+            // CTA pill at the bottom
+            const ctaW = phoneW - 40 * scale;
+            const ctaH = 36 * scale;
+            const ctaX = phoneX + 20 * scale;
+            const ctaY = phoneY + phoneH - 56 * scale;
+            const bs = platform.buttonStyle;
+            ctx.fillStyle = bs.bg === 'transparent' ? '#fff' : bs.bg;
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(ctaX, ctaY, ctaW, ctaH, 6 * scale);
+            else ctx.rect(ctaX, ctaY, ctaW, ctaH);
+            ctx.fill();
+
+            ctx.fillStyle = bs.text;
+            ctx.font = fontBold(13);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(content.buttonText, ctaX + ctaW / 2, ctaY + ctaH / 2);
+            ctx.textBaseline = 'alphabetic';
+        }
+
+        // ============== PREVIEW COMPONENTS ==============
+        function PreviewHeader({ content, style, platform }) {
+            return (
+                <div className="px-4 flex items-center gap-3 mb-3 flex-shrink-0">
+                    <div className={`w-10 h-10 bg-gray-200 overflow-hidden flex-shrink-0 ${platform.avatarShape === 'circle' ? 'rounded-full' : 'rounded-lg'}`}>
+                        {content.avatar && <img src={content.avatar.src} className="w-full h-full object-cover" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                        <h3 className={`text-sm font-semibold flex items-center gap-1 ${style.darkMode ? 'text-white' : 'text-black'}`}>
+                            <span className="truncate">{content.name}</span>
+                            {content.verified && <span className="flex-shrink-0"><Icons.Verified /></span>}
+                        </h3>
+                        <p className="text-[10px] text-gray-400">{platform.sponsorLabel} • 2u</p>
+                    </div>
+                    <div className={style.darkMode ? 'text-white' : 'text-black'}>...</div>
+                </div>
+            );
+        }
+
+        function PreviewFeedCTA({ content, style, platform, metrics }) {
+            const bs = platform.buttonStyle;
+            const btnStyle = {
+                background: bs.bg === 'transparent' ? 'transparent' : bs.bg,
+                color: bs.text,
+                border: bs.border !== 'transparent' ? `1px solid ${bs.border}` : 'none'
+            };
+            return (
+                <div className="pt-12 flex flex-col h-full relative">
+                    <PreviewHeader content={content} style={style} platform={platform} />
+                    <div className={`px-4 mb-3 text-sm ${style.darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                        <p className="whitespace-pre-wrap leading-snug">{content.text}</p>
+                    </div>
+                    <div className="flex flex-col flex-grow">
+                        <div className="w-full bg-gray-100 relative flex-shrink-0" style={{ height: `${metrics.imgHeight}px` }}>
+                            {content.mainImage ? <img src={content.mainImage.src} className="w-full h-full object-cover" /> : <div className="absolute inset-0 flex items-center justify-center text-gray-400 bg-gray-800">No Image</div>}
+                        </div>
+                        <div className={`px-4 h-[70px] flex-shrink-0 ${style.darkMode ? 'bg-dark-700' : 'bg-gray-100'} flex items-center justify-between gap-3`}>
+                            <div className="flex-1 min-w-0">
+                                <p className={`text-xs font-bold truncate ${style.darkMode ? 'text-white' : 'text-black'}`}>{content.headline}</p>
+                                <p className="text-[10px] text-gray-500 truncate">{content.url}</p>
+                            </div>
+                            <div className="flex-shrink-0 px-3 py-1.5 rounded text-[10px] font-bold whitespace-nowrap" style={btnStyle}>
+                                {content.buttonText}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function PreviewFeedIcons({ content, style, platform, metrics }) {
+            return (
+                <div className="pt-12 flex flex-col h-full relative">
+                    <PreviewHeader content={content} style={style} platform={platform} />
+                    <div className="w-full bg-gray-100 relative flex-shrink-0" style={{ height: `${metrics.imgHeight}px` }}>
+                        {content.mainImage ? <img src={content.mainImage.src} className="w-full h-full object-cover" /> : <div className="absolute inset-0 flex items-center justify-center text-gray-400 bg-gray-800">No Image</div>}
+                    </div>
+                    <div className={`flex-1 px-4 py-3 ${style.darkMode ? 'text-white' : 'text-black'}`}>
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-3">
+                                <Icons.Heart />
+                                <Icons.Comment />
+                                <Icons.Share />
+                            </div>
+                            <Icons.Bookmark />
+                        </div>
+                        <p className="text-xs font-semibold mb-1">{(content.likes ?? 0).toLocaleString('nl-NL')} vind-ik-leuks</p>
+                        <p className="text-xs leading-snug">
+                            <span className="font-semibold">{content.name}</span> {content.text}
+                        </p>
+                        {(content.comments ?? 0) > 0 && (
+                            <p className="text-[11px] text-gray-500 mt-1">Bekijk alle {content.comments} reacties</p>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        function PreviewStory({ content, style, platform }) {
+            const bs = platform.buttonStyle;
+            const btnStyle = {
+                background: bs.bg === 'transparent' ? '#fff' : bs.bg,
+                color: bs.text,
+            };
+            return (
+                <div className="h-full relative w-full flex flex-col">
+                    <div className="absolute inset-0 bg-gray-800">
+                        {content.mainImage && <img src={content.mainImage.src} className="w-full h-full object-cover" />}
+                        <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/80 to-transparent"></div>
+                    </div>
+                    <div className="relative z-10 pt-12 px-4 flex items-center gap-2">
+                        <div className={`w-8 h-8 border border-white/20 bg-gray-200 overflow-hidden ${platform.avatarShape === 'circle' ? 'rounded-full' : 'rounded-lg'}`}>
+                            {content.avatar && <img src={content.avatar.src} className="w-full h-full object-cover" />}
+                        </div>
+                        <div className="text-white">
+                            <div className="text-sm font-semibold drop-shadow-md flex items-center gap-1">
+                                {content.name}
+                                {content.verified && <Icons.Verified />}
+                            </div>
+                            <div className="text-[10px] opacity-85 drop-shadow-md">{platform.sponsorLabel}</div>
+                        </div>
+                    </div>
+                    <div className="mt-auto relative z-10 px-4 pb-4 flex flex-col gap-3 text-white">
+                        <div className="self-end flex flex-col items-center gap-4 mb-2">
+                            <div className="flex flex-col items-center"><Icons.Heart /><span className="text-[10px] mt-0.5">{(content.likes ?? 0).toLocaleString('nl-NL')}</span></div>
+                            <div className="flex flex-col items-center"><Icons.Comment /><span className="text-[10px] mt-0.5">{content.comments}</span></div>
+                            <div className="flex flex-col items-center"><Icons.Share /><span className="text-[10px] mt-0.5">{content.shares}</span></div>
+                        </div>
+                        <button className="w-full py-2 rounded-md text-sm font-bold" style={btnStyle}>
+                            {content.buttonText}
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        // ============== APP ==============
+        function App() {
+            const [platformId, setPlatformId] = useState('linkedin');
+            const [formatId, setFormatId] = useState('feed-4-5');
+            const [sidebarTab, setSidebarTab] = useState('edit');
+            const [loading, setLoading] = useState(false);
+            const [batchProgress, setBatchProgress] = useState(null);
+            const [savedDesigns, setSavedDesigns] = useState([]);
+            const [brandKits, setBrandKits] = useState([]);
+            const [dropping, setDropping] = useState(false);
+
+            const [content, setContent] = useState({
+                avatar: null,
+                mainImage: null,
+                name: 'Bedrijfsnaam B.V.',
+                text: 'Ontdek onze nieuwste collectie! We hebben hard gewerkt aan unieke designs.',
+                headline: 'Nieuwe Collectie',
+                buttonText: 'Lees meer',
+                url: 'bedrijfsnaam.nl',
+                verified: false,
+                likes: 124,
+                comments: 12,
+                shares: 4
+            });
+
+            const [style, setStyle] = useState({
+                bgColor1: '#e4e4e7',
+                bgColor2: '#d4d4d8',
+                bgType: 'transparent',
+                padding: 40,
+                darkMode: false,
+                deviceShadow: true,
+                deviceBorder: false,
+                phoneWidth: 320,
+                phoneHeight: 650,
+            });
+
+            const [exportOpts, setExportOpts] = useState({
+                formats: { 'feed-4-5': true, 'feed-1-1': false, 'feed-1-91': false, 'story-9-16': false },
+                platforms: { linkedin: true, meta: false, instagram: false, tiktok: false },
+                modes: { light: true, dark: false }
+            });
+
+            // Load saved data
+            useEffect(() => {
+                (async () => {
+                    const [d, b] = await Promise.all([dbGetAll(DESIGNS_STORE), dbGetAll(BRANDS_STORE)]);
+                    setSavedDesigns(d);
+                    setBrandKits(b);
+                })();
+            }, []);
+
+            // Paste handler
+            useEffect(() => {
+                const handlePaste = async (e) => {
+                    if (!e.clipboardData) return;
+                    for (const item of e.clipboardData.items) {
+                        if (item.type.startsWith('image/')) {
+                            const file = item.getAsFile();
+                            if (file) {
+                                const data = await fileToImageData(file);
+                                setContent(prev => ({ ...prev, mainImage: data }));
+                                return;
+                            }
+                        }
+                    }
+                };
+                document.addEventListener('paste', handlePaste);
+                return () => document.removeEventListener('paste', handlePaste);
+            }, []);
+
+            const platform = PLATFORMS[platformId];
+            const format = FORMATS[formatId];
+
+            const updateContent = (k, v) => setContent(prev => ({ ...prev, [k]: v }));
+            const updateStyle = (k, v) => setStyle(prev => ({ ...prev, [k]: v }));
+
+            const handleImageUpload = async (key, e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const data = await fileToImageData(file);
+                setContent(prev => ({ ...prev, [key]: data }));
+                e.target.value = ''; // allow re-upload of same file
+            };
+
+            const handleDrop = async (e) => {
+                e.preventDefault();
+                setDropping(false);
+                const file = e.dataTransfer.files?.[0];
+                if (!file?.type.startsWith('image/')) return;
+                const data = await fileToImageData(file);
+                setContent(prev => ({ ...prev, mainImage: data }));
+            };
+
+            const applyPlatform = (id) => {
+                setPlatformId(id);
+                const p = PLATFORMS[id];
+                setContent(prev => ({ ...prev, buttonText: p.buttonText }));
+                if (p.layout === 'story' && !FORMATS[formatId].isStory) setFormatId('story-9-16');
+                if (p.layout !== 'story' && FORMATS[formatId].isStory) setFormatId('feed-4-5');
+            };
+
+            const applyFormat = (id) => {
+                setFormatId(id);
+                if (FORMATS[id].isStory && PLATFORMS[platformId].layout !== 'story') setPlatformId('tiktok');
+                if (!FORMATS[id].isStory && PLATFORMS[platformId].layout === 'story') setPlatformId('instagram');
+            };
+
+            // Brand kits
+            const saveBrandKit = async () => {
+                const kitName = prompt('Naam voor deze brand kit (bv. Cosis):');
+                if (!kitName) return;
+                const kit = {
+                    id: Date.now(),
+                    name: kitName,
+                    avatar: content.avatar,
+                    senderName: content.name,
+                    url: content.url,
+                    verified: content.verified,
+                    date: new Date().toLocaleDateString()
+                };
+                await dbSave(BRANDS_STORE, kit);
+                setBrandKits(await dbGetAll(BRANDS_STORE));
+            };
+
+            const loadBrandKit = (kit) => {
+                setContent(prev => ({
+                    ...prev,
+                    avatar: kit.avatar,
+                    name: kit.senderName,
+                    url: kit.url,
+                    verified: kit.verified ?? false
+                }));
+            };
+
+            const deleteBrandKit = async (id, e) => {
+                e.stopPropagation();
+                await dbDelete(BRANDS_STORE, id);
+                setBrandKits(await dbGetAll(BRANDS_STORE));
+            };
+
+            // Designs library
+            const saveDesign = async () => {
+                const newDesign = {
+                    id: Date.now(),
+                    date: new Date().toLocaleDateString() + ' ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    platformId, formatId, content, style
+                };
+                await dbSave(DESIGNS_STORE, newDesign);
+                setSavedDesigns(await dbGetAll(DESIGNS_STORE));
+                setSidebarTab('library');
+            };
+
+            const loadDesign = (d) => {
+                if (d.platformId) setPlatformId(d.platformId);
+                if (d.formatId) setFormatId(d.formatId);
+                setContent(d.content);
+                setStyle(d.style);
+                setSidebarTab('edit');
+            };
+
+            const deleteDesign = async (id, e) => {
+                e.stopPropagation();
+                await dbDelete(DESIGNS_STORE, id);
+                setSavedDesigns(await dbGetAll(DESIGNS_STORE));
+            };
+
+            // Layout metrics for current preview
+            const metrics = useMemo(() =>
+                computeMetrics({ platform, format, content, phoneW: style.phoneWidth, sliderH: style.phoneHeight }),
+                [platform, format, content, style.phoneWidth, style.phoneHeight]
+            );
+
+            // Render to canvas (parameterized for batch)
+            const renderToCanvas = useCallback(async (opts = {}) => {
+                const usePlatform = PLATFORMS[opts.platformId ?? platformId];
+                const useFormat = FORMATS[opts.formatId ?? formatId];
+                const useDarkMode = opts.darkMode ?? style.darkMode;
+
+                const scale = 2;
+                const phoneW_orig = style.phoneWidth;
+                const m = computeMetrics({
+                    platform: usePlatform, format: useFormat, content,
+                    phoneW: phoneW_orig, sliderH: style.phoneHeight
+                });
+                const phoneH_orig = m.phoneHeight;
+                const imgH_orig = m.imgHeight;
+
+                const phoneW = phoneW_orig * scale;
+                const phoneH = phoneH_orig * scale;
+                const pad = style.padding * scale;
+                const canvasW = phoneW + pad * 2;
+                const canvasH = phoneH + pad * 2;
+
+                const canvas = document.createElement('canvas');
+                canvas.width = canvasW;
+                canvas.height = canvasH;
+                const ctx = canvas.getContext('2d');
+
+                // Background
+                if (style.bgType === 'solid') {
+                    ctx.fillStyle = style.bgColor1;
+                    ctx.fillRect(0, 0, canvasW, canvasH);
+                } else if (style.bgType === 'gradient') {
+                    const grd = ctx.createLinearGradient(0, 0, canvasW, canvasH);
+                    grd.addColorStop(0, style.bgColor1);
+                    grd.addColorStop(1, style.bgColor2);
+                    ctx.fillStyle = grd;
+                    ctx.fillRect(0, 0, canvasW, canvasH);
+                } else {
+                    ctx.clearRect(0, 0, canvasW, canvasH);
+                }
+
+                const phoneX = pad, phoneY = pad;
+                const radius = 40 * scale;
+
+                if (style.deviceShadow) {
+                    ctx.shadowColor = 'rgba(0,0,0,0.3)';
+                    ctx.shadowBlur = 40 * scale;
+                    ctx.shadowOffsetY = 20 * scale;
+                }
+
+                ctx.fillStyle = useDarkMode ? '#000' : '#fff';
+                ctx.beginPath();
+                if (ctx.roundRect) ctx.roundRect(phoneX, phoneY, phoneW, phoneH, radius);
+                else ctx.rect(phoneX, phoneY, phoneW, phoneH);
+                ctx.fill();
+
+                ctx.shadowColor = 'transparent';
+                ctx.shadowBlur = 0;
+                ctx.shadowOffsetY = 0;
+
+                if (style.deviceBorder) {
+                    ctx.lineWidth = 1.5 * scale;
+                    ctx.strokeStyle = '#e4e4e7';
+                    ctx.stroke();
+                }
+
+                // Clip to phone
+                ctx.save();
+                ctx.beginPath();
+                if (ctx.roundRect) ctx.roundRect(phoneX, phoneY, phoneW, phoneH, radius);
+                else ctx.rect(phoneX, phoneY, phoneW, phoneH);
+                ctx.clip();
+
+                const fontBold = (sz) => `600 ${sz * scale}px "Inter", sans-serif`;
+                const fontReg = (sz) => `400 ${sz * scale}px "Inter", sans-serif`;
+
+                // Status bar time
+                ctx.fillStyle = (usePlatform.layout === 'story' || useDarkMode) ? '#fff' : '#000';
+                ctx.font = fontBold(12);
+                ctx.fillText('12:00', phoneX + 30 * scale, phoneY + 30 * scale);
+
+                const safeX = phoneX + 20 * scale;
+                const safeW = phoneW - 40 * scale;
+                const currentY = phoneY + 50 * scale;
+
+                const renderArgs = {
+                    scale, phoneX, phoneY, phoneW, phoneH, safeX, safeW, currentY,
+                    content, style, platform: usePlatform, darkMode: useDarkMode,
+                    imgH: imgH_orig * scale, fontBold, fontReg
+                };
+
+                if (usePlatform.layout === 'feed-cta') await renderFeedCTA(ctx, renderArgs);
+                else if (usePlatform.layout === 'feed-icons') await renderFeedIcons(ctx, renderArgs);
+                else if (usePlatform.layout === 'story') await renderStory(ctx, renderArgs);
+
+                ctx.restore();
+
+                // Notch
+                const notchW = 100 * scale, notchH = 25 * scale;
+                ctx.fillStyle = '#000';
+                ctx.beginPath();
+                if (ctx.roundRect) ctx.roundRect(phoneX + (phoneW - notchW) / 2, phoneY + 10 * scale, notchW, notchH, 12 * scale);
+                else ctx.rect(phoneX + (phoneW - notchW) / 2, phoneY + 10 * scale, notchW, notchH);
+                ctx.fill();
+
+                return canvas;
+            }, [platformId, formatId, content, style]);
+
+            const generateCanvas = async () => {
+                setLoading(true);
+                await new Promise(r => setTimeout(r, 50));
+                try {
+                    const canvas = await renderToCanvas();
+                    canvas.toBlob((blob) => {
+                        saveAs(blob, `${content.name.replace(/\s/g, '_')}_${platformId}_${formatId}.png`);
+                        setLoading(false);
+                    }, 'image/png');
+                } catch (e) {
+                    console.error(e);
+                    setLoading(false);
+                }
+            };
+
+            const generateBatch = async () => {
+                const platforms = Object.entries(exportOpts.platforms).filter(([_, v]) => v).map(([k]) => k);
+                const formats = Object.entries(exportOpts.formats).filter(([_, v]) => v).map(([k]) => k);
+                const modes = Object.entries(exportOpts.modes).filter(([_, v]) => v).map(([k]) => k);
+
+                if (!platforms.length || !formats.length || !modes.length) {
+                    alert('Selecteer minimaal één platform, formaat en modus.');
+                    return;
+                }
+
+                setLoading(true);
+                const zip = new JSZip();
+                const total = platforms.length * formats.length * modes.length;
+                let done = 0;
+                setBatchProgress({ done, total });
+
+                for (const p of platforms) {
+                    for (const f of formats) {
+                        for (const m of modes) {
+                            try {
+                                const canvas = await renderToCanvas({
+                                    platformId: p, formatId: f, darkMode: m === 'dark'
+                                });
+                                const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+                                zip.file(`${content.name.replace(/\s/g, '_')}_${p}_${f}_${m}.png`, blob);
+                            } catch (e) { console.error('Variant failed', p, f, m, e); }
+                            done++;
+                            setBatchProgress({ done, total });
+                        }
+                    }
+                }
+
+                const zipBlob = await zip.generateAsync({ type: 'blob' });
+                saveAs(zipBlob, `${content.name.replace(/\s/g, '_')}_socialframe.zip`);
+                setBatchProgress(null);
+                setLoading(false);
+            };
+
+            // ----- RENDER -----
+            return (
+                <div className="flex flex-col md:flex-row h-screen">
+                    <aside className="w-full md:w-96 bg-dark-800 border-r border-white/10 flex flex-col z-20 shadow-2xl">
+                        <div className="p-5 border-b border-white/10 flex-shrink-0">
+                            <h1 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">SocialFrame v2</h1>
+                            <p className="text-[11px] text-gray-400 mt-1">Multi-platform • Brand kits • Batch export</p>
+                        </div>
+
+                        <div className="flex border-b border-white/10 flex-shrink-0">
+                            {[['edit', 'Edit'], ['library', 'Library'], ['brands', 'Brands'], ['export', 'Export']].map(([id, label]) => (
+                                <button key={id} onClick={() => setSidebarTab(id)}
+                                    className={`flex-1 py-3 text-xs font-medium transition-colors ${sidebarTab === id ? 'text-white border-b-2 border-blue-500' : 'text-gray-500 hover:text-gray-300'}`}>
+                                    {label}
+                                    {id === 'library' && <span className="text-[10px] bg-gray-700 px-1.5 py-0.5 rounded-full ml-1">{savedDesigns.length}</span>}
+                                    {id === 'brands' && <span className="text-[10px] bg-gray-700 px-1.5 py-0.5 rounded-full ml-1">{brandKits.length}</span>}
+                                </button>
+                            ))}
+                        </div>
+
+                        {sidebarTab === 'edit' && (
+                            <div className="p-5 space-y-5 animate-fade-in flex-grow overflow-y-auto">
+                                <div className="grid grid-cols-2 gap-2">
+                                    <div>
+                                        <label className="block text-[11px] text-gray-400 mb-1">Platform</label>
+                                        <select value={platformId} onChange={e => applyPlatform(e.target.value)}
+                                            className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm">
+                                            {Object.entries(PLATFORMS).map(([id, p]) => <option key={id} value={id}>{p.name}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-[11px] text-gray-400 mb-1">Format</label>
+                                        <select value={formatId} onChange={e => applyFormat(e.target.value)}
+                                            className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm">
+                                            {Object.entries(FORMATS).map(([id, f]) => <option key={id} value={id}>{f.name}</option>)}
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Assets</h3>
+                                    <div className="flex gap-3">
+                                        <div className="flex-1">
+                                            <label className="block text-[11px] text-gray-400 mb-1">Avatar</label>
+                                            <label className={`w-full aspect-square bg-dark-900 border border-dashed border-gray-600 flex items-center justify-center cursor-pointer hover:border-blue-500 overflow-hidden ${platform.avatarShape === 'circle' ? 'rounded-full' : 'rounded-lg'}`}>
+                                                {content.avatar ? <img src={content.avatar.src} className="w-full h-full object-cover" /> : <Icons.User />}
+                                                <input type="file" accept="image/*" onChange={e => handleImageUpload('avatar', e)} />
+                                            </label>
+                                        </div>
+                                        <div className="flex-[3]">
+                                            <label className="block text-[11px] text-gray-400 mb-1">Foto · sleep · Cmd+V</label>
+                                            <label className="w-full h-24 bg-dark-900 border border-dashed border-gray-600 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 overflow-hidden relative">
+                                                {content.mainImage ? <img src={content.mainImage.src} className="w-full h-full object-cover opacity-50" /> : (
+                                                    <div className="flex flex-col items-center text-gray-500">
+                                                        <Icons.Image />
+                                                        <span className="text-[10px] mt-1">Klik / Sleep / Cmd+V</span>
+                                                    </div>
+                                                )}
+                                                <input type="file" accept="image/*" onChange={e => handleImageUpload('mainImage', e)} />
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-3">
+                                    <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Content</h3>
+                                    <div>
+                                        <label className="block text-[11px] text-gray-400 mb-1">Naam</label>
+                                        <div className="flex gap-2 items-center">
+                                            <input type="text" value={content.name} onChange={e => updateContent('name', e.target.value)}
+                                                className="flex-1 bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                            <label className="flex items-center gap-1 text-[11px] text-gray-400 cursor-pointer whitespace-nowrap">
+                                                <input type="checkbox" checked={content.verified} onChange={e => updateContent('verified', e.target.checked)} />
+                                                Verified
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-[11px] text-gray-400 mb-1">Post-tekst</label>
+                                        <textarea rows="3" value={content.text} onChange={e => updateContent('text', e.target.value)}
+                                            className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm resize-none" />
+                                    </div>
+
+                                    {platform.layout === 'feed-cta' && (
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <div className="col-span-2">
+                                                <label className="block text-[11px] text-gray-400 mb-1">Headline</label>
+                                                <input type="text" value={content.headline} onChange={e => updateContent('headline', e.target.value)}
+                                                    className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-[11px] text-gray-400 mb-1">Knop</label>
+                                                <input type="text" value={content.buttonText} onChange={e => updateContent('buttonText', e.target.value)}
+                                                    className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-[11px] text-gray-400 mb-1">URL</label>
+                                                <input type="text" value={content.url} onChange={e => updateContent('url', e.target.value)}
+                                                    className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {(platform.layout === 'feed-icons' || platform.layout === 'story') && (
+                                        <div>
+                                            <label className="block text-[11px] text-gray-400 mb-1">Knop-tekst</label>
+                                            <input type="text" value={content.buttonText} onChange={e => updateContent('buttonText', e.target.value)}
+                                                className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                        </div>
+                                    )}
+
+                                    {(platform.layout === 'feed-icons' || platform.layout === 'story') && (
+                                        <div className="grid grid-cols-3 gap-2">
+                                            <div>
+                                                <label className="block text-[10px] text-gray-400 mb-1">❤ Likes</label>
+                                                <input type="number" value={content.likes} onChange={e => updateContent('likes', parseInt(e.target.value) || 0)}
+                                                    className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-[10px] text-gray-400 mb-1">💬 Comments</label>
+                                                <input type="number" value={content.comments} onChange={e => updateContent('comments', parseInt(e.target.value) || 0)}
+                                                    className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-[10px] text-gray-400 mb-1">↗ Shares</label>
+                                                <input type="number" value={content.shares} onChange={e => updateContent('shares', parseInt(e.target.value) || 0)}
+                                                    className="w-full bg-dark-900 border border-gray-700 rounded px-2 py-2 text-sm" />
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="space-y-3">
+                                    <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Style</h3>
+                                    <div>
+                                        <label className="block text-[11px] text-gray-400 mb-1">Phone Width ({style.phoneWidth}px)</label>
+                                        <input type="range" min="280" max="450" step="5" value={style.phoneWidth}
+                                            onChange={e => updateStyle('phoneWidth', parseInt(e.target.value))} className="w-full" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[11px] text-gray-400 mb-1">Phone Height min ({style.phoneHeight}px)</label>
+                                        <input type="range" min="500" max="900" step="5" value={style.phoneHeight}
+                                            onChange={e => updateStyle('phoneHeight', parseInt(e.target.value))} className="w-full" />
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-gray-300">Dark mode</span>
+                                        <button onClick={() => updateStyle('darkMode', !style.darkMode)}
+                                            className={`w-10 h-5 rounded-full relative ${style.darkMode ? 'bg-blue-600' : 'bg-gray-700'}`}>
+                                            <div className={`w-3 h-3 bg-white rounded-full absolute top-1 ${style.darkMode ? 'left-6' : 'left-1'}`}></div>
+                                        </button>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-gray-400">Schaduw</span>
+                                        <button onClick={() => updateStyle('deviceShadow', !style.deviceShadow)}
+                                            className={`w-10 h-5 rounded-full relative ${style.deviceShadow ? 'bg-blue-600' : 'bg-gray-700'}`}>
+                                            <div className={`w-3 h-3 bg-white rounded-full absolute top-1 ${style.deviceShadow ? 'left-6' : 'left-1'}`}></div>
+                                        </button>
+                                    </div>
+                                    <div>
+                                        <label className="block text-[11px] text-gray-400 mb-1">Achtergrond</label>
+                                        <div className="flex gap-2">
+                                            <div className="h-8 w-8 rounded-full overflow-hidden border border-gray-600 relative cursor-pointer" style={{ background: style.bgColor1 }}>
+                                                <input type="color" value={style.bgColor1} onChange={e => updateStyle('bgColor1', e.target.value)} className="opacity-0 w-full h-full cursor-pointer" />
+                                            </div>
+                                            {style.bgType === 'gradient' && (
+                                                <div className="h-8 w-8 rounded-full overflow-hidden border border-gray-600 relative cursor-pointer" style={{ background: style.bgColor2 }}>
+                                                    <input type="color" value={style.bgColor2} onChange={e => updateStyle('bgColor2', e.target.value)} className="opacity-0 w-full h-full cursor-pointer" />
+                                                </div>
+                                            )}
+                                            <select value={style.bgType} onChange={e => updateStyle('bgType', e.target.value)} className="ml-auto bg-dark-900 border border-gray-700 rounded px-2 text-xs">
+                                                <option value="solid">Solid</option>
+                                                <option value="gradient">Gradient</option>
+                                                <option value="transparent">Transparent</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-2 pt-2">
+                                    <button onClick={saveDesign} className="flex-1 bg-gray-700 text-white font-bold py-2.5 rounded-lg hover:bg-gray-600 flex items-center justify-center gap-2 text-sm">
+                                        <Icons.Save /> Save
+                                    </button>
+                                    <button onClick={generateCanvas} disabled={loading} className="flex-1 bg-white text-black font-bold py-2.5 rounded-lg hover:bg-gray-200 flex items-center justify-center gap-2 text-sm">
+                                        {loading && !batchProgress ? <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-black"></div> : <><Icons.Download /> PNG</>}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {sidebarTab === 'library' && (
+                            <div className="p-4 space-y-3 animate-fade-in flex-grow overflow-y-auto">
+                                {savedDesigns.length === 0 ? (
+                                    <div className="text-center text-gray-500 py-10 text-sm">Nog geen ontwerpen.</div>
+                                ) : savedDesigns.map(d => (
+                                    <div key={d.id} onClick={() => loadDesign(d)}
+                                        className="bg-dark-700 border border-white/5 rounded-lg p-3 cursor-pointer hover:border-blue-500 flex gap-3 group">
+                                        <div className="w-12 h-12 rounded bg-gray-800 flex-shrink-0 overflow-hidden">
+                                            {d.content.mainImage ? <img src={d.content.mainImage.src} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-600"><Icons.Image /></div>}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex justify-between">
+                                                <span className="text-[10px] font-bold text-gray-400 uppercase">{PLATFORMS[d.platformId]?.name || 'Feed'}</span>
+                                                <button onClick={e => deleteDesign(d.id, e)} className="text-gray-500 hover:text-red-400"><Icons.Trash /></button>
+                                            </div>
+                                            <p className="text-sm font-medium truncate">{d.content.name}</p>
+                                            <p className="text-[10px] text-gray-500">{d.date}</p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {sidebarTab === 'brands' && (
+                            <div className="p-4 space-y-3 animate-fade-in flex-grow overflow-y-auto">
+                                <button onClick={saveBrandKit} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2.5 rounded-lg flex items-center justify-center gap-2 text-sm">
+                                    <Icons.Plus /> Brand opslaan
+                                </button>
+                                <p className="text-[11px] text-gray-500">Naam + avatar + URL — wissel snel tussen klanten.</p>
+                                {brandKits.length === 0 ? (
+                                    <div className="text-center text-gray-500 py-10 text-sm">Nog geen brand kits.</div>
+                                ) : brandKits.map(k => (
+                                    <div key={k.id} onClick={() => loadBrandKit(k)}
+                                        className="bg-dark-700 border border-white/5 rounded-lg p-3 cursor-pointer hover:border-blue-500 flex gap-3">
+                                        <div className="w-12 h-12 rounded-full bg-gray-800 flex-shrink-0 overflow-hidden">
+                                            {k.avatar ? <img src={k.avatar.src} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-600"><Icons.Briefcase /></div>}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex justify-between items-start">
+                                                <span className="text-[10px] font-bold text-gray-400 uppercase truncate">{k.name}</span>
+                                                <button onClick={e => deleteBrandKit(k.id, e)} className="text-gray-500 hover:text-red-400"><Icons.Trash /></button>
+                                            </div>
+                                            <p className="text-sm font-medium truncate">{k.senderName}</p>
+                                            <p className="text-[10px] text-gray-500 truncate">{k.url}</p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {sidebarTab === 'export' && (
+                            <div className="p-5 space-y-5 animate-fade-in flex-grow overflow-y-auto">
+                                <p className="text-[12px] text-gray-400">Vink platforms × formaten × modi aan en download alles als ZIP.</p>
+                                <div>
+                                    <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Platforms</h3>
+                                    <div className="space-y-1.5">
+                                        {Object.entries(PLATFORMS).map(([id, p]) => (
+                                            <label key={id} className="flex items-center gap-2 text-sm cursor-pointer">
+                                                <input type="checkbox" checked={exportOpts.platforms[id]}
+                                                    onChange={e => setExportOpts(prev => ({ ...prev, platforms: { ...prev.platforms, [id]: e.target.checked } }))} />
+                                                {p.name}
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div>
+                                    <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Formaten</h3>
+                                    <div className="space-y-1.5">
+                                        {Object.entries(FORMATS).map(([id, f]) => (
+                                            <label key={id} className="flex items-center gap-2 text-sm cursor-pointer">
+                                                <input type="checkbox" checked={exportOpts.formats[id]}
+                                                    onChange={e => setExportOpts(prev => ({ ...prev, formats: { ...prev.formats, [id]: e.target.checked } }))} />
+                                                {f.name}
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div>
+                                    <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-2">Modus</h3>
+                                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                                        <input type="checkbox" checked={exportOpts.modes.light}
+                                            onChange={e => setExportOpts(prev => ({ ...prev, modes: { ...prev.modes, light: e.target.checked } }))} /> Light
+                                    </label>
+                                    <label className="flex items-center gap-2 text-sm cursor-pointer mt-1.5">
+                                        <input type="checkbox" checked={exportOpts.modes.dark}
+                                            onChange={e => setExportOpts(prev => ({ ...prev, modes: { ...prev.modes, dark: e.target.checked } }))} /> Dark
+                                    </label>
+                                </div>
+                                <button onClick={generateBatch} disabled={loading}
+                                    className="w-full bg-white text-black font-bold py-3 rounded-lg hover:bg-gray-200 flex items-center justify-center gap-2 text-sm">
+                                    <Icons.Package />
+                                    {batchProgress ? `Bezig (${batchProgress.done}/${batchProgress.total})` : 'Export ZIP'}
+                                </button>
+                            </div>
+                        )}
+                    </aside>
+
+                    <main
+                        className={`flex-1 bg-black relative flex items-center justify-center p-8 checkerboard overflow-auto ${dropping ? 'dropzone-active' : ''}`}
+                        onDragOver={e => { e.preventDefault(); setDropping(true); }}
+                        onDragLeave={() => setDropping(false)}
+                        onDrop={handleDrop}
+                    >
+                        <div className="relative shadow-2xl"
+                            style={{
+                                padding: style.bgType === 'transparent' ? 0 : `${style.padding}px`,
+                                background: style.bgType === 'transparent' ? 'transparent' : (style.bgType === 'solid' ? style.bgColor1 : `linear-gradient(135deg, ${style.bgColor1}, ${style.bgColor2})`)
+                            }}>
+                            <div className={`relative overflow-hidden ${style.darkMode ? 'bg-black' : 'bg-white'} rounded-[40px]`}
+                                style={{
+                                    width: `${style.phoneWidth}px`,
+                                    height: `${metrics.phoneHeight}px`,
+                                    boxShadow: style.deviceShadow ? '0 20px 40px rgba(0,0,0,0.3)' : 'none',
+                                    border: style.deviceBorder ? '1.5px solid #e4e4e7' : 'none'
+                                }}>
+                                <div className="absolute top-2 left-1/2 -translate-x-1/2 w-24 h-6 bg-black rounded-full z-20"></div>
+
+                                {platform.layout === 'feed-cta' && <PreviewFeedCTA content={content} style={style} platform={platform} metrics={metrics} />}
+                                {platform.layout === 'feed-icons' && <PreviewFeedIcons content={content} style={style} platform={platform} metrics={metrics} />}
+                                {platform.layout === 'story' && <PreviewStory content={content} style={style} platform={platform} />}
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
