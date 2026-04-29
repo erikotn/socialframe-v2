@@ -781,13 +781,12 @@
             });
 
             const [style, setStyle] = useState({
-                bgColor1: '#e4e4e7',
-                bgColor2: '#d4d4d8',
-                bgType: 'transparent',
+                bgColor1: '#ffffff',
+                bgColor2: '#f4f4f5',
+                bgType: 'solid',
                 padding: 40,
                 darkMode: false,
-                deviceShadow: true,
-                deviceBorder: false,
+                deviceFrame: 'shadow', // 'none' | 'shadow' | 'outline'
                 phoneWidth: 320,
                 phoneHeight: 650,
             });
@@ -971,7 +970,7 @@
                 const phoneX = pad, phoneY = pad;
                 const radius = 40 * scale;
 
-                if (style.deviceShadow) {
+                if (style.deviceFrame === 'shadow') {
                     ctx.shadowColor = 'rgba(0,0,0,0.3)';
                     ctx.shadowBlur = 40 * scale;
                     ctx.shadowOffsetY = 20 * scale;
@@ -987,9 +986,9 @@
                 ctx.shadowBlur = 0;
                 ctx.shadowOffsetY = 0;
 
-                if (style.deviceBorder) {
+                if (style.deviceFrame === 'outline') {
                     ctx.lineWidth = 1.5 * scale;
-                    ctx.strokeStyle = '#e4e4e7';
+                    ctx.strokeStyle = '#d4d4d8';
                     ctx.stroke();
                 }
 
@@ -1239,12 +1238,16 @@
                                             <div className={`w-3 h-3 bg-white rounded-full absolute top-1 ${style.darkMode ? 'left-6' : 'left-1'}`}></div>
                                         </button>
                                     </div>
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-sm text-gray-400">Schaduw</span>
-                                        <button onClick={() => updateStyle('deviceShadow', !style.deviceShadow)}
-                                            className={`w-10 h-5 rounded-full relative ${style.deviceShadow ? 'bg-blue-600' : 'bg-gray-700'}`}>
-                                            <div className={`w-3 h-3 bg-white rounded-full absolute top-1 ${style.deviceShadow ? 'left-6' : 'left-1'}`}></div>
-                                        </button>
+                                    <div>
+                                        <label className="block text-[11px] text-gray-400 mb-1">Telefoon-frame</label>
+                                        <div className="grid grid-cols-3 gap-1 bg-dark-900 p-1 rounded-lg border border-white/5">
+                                            {[['none','Geen'],['shadow','Schaduw'],['outline','Outline']].map(([id,label]) => (
+                                                <button key={id} onClick={() => updateStyle('deviceFrame', id)}
+                                                    className={`py-1.5 text-xs font-medium rounded-md transition-all ${style.deviceFrame === id ? 'bg-dark-700 text-white shadow' : 'text-gray-500 hover:text-gray-300'}`}>
+                                                    {label}
+                                                </button>
+                                            ))}
+                                        </div>
                                     </div>
                                     <div>
                                         <label className="block text-[11px] text-gray-400 mb-1">Achtergrond</label>
@@ -1389,8 +1392,8 @@
                                 style={{
                                     width: `${style.phoneWidth}px`,
                                     height: `${metrics.phoneHeight}px`,
-                                    boxShadow: style.deviceShadow ? '0 20px 40px rgba(0,0,0,0.3)' : 'none',
-                                    border: style.deviceBorder ? '1.5px solid #e4e4e7' : 'none'
+                                    boxShadow: style.deviceFrame === 'shadow' ? '0 20px 40px rgba(0,0,0,0.3)' : 'none',
+                                    border: style.deviceFrame === 'outline' ? '1.5px solid #d4d4d8' : 'none'
                                 }}>
                                 <div className="absolute top-2 left-1/2 -translate-x-1/2 w-24 h-6 bg-black rounded-full z-20"></div>
 
