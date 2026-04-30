@@ -39,7 +39,9 @@ const json = (body: unknown, status = 200) =>
         headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
 
-const VALID_RESOURCES = ["designs", "brand_kits"];
+// Tables that this gated proxy is allowed to read/write.
+// Add new tools here as the platform grows (pmax_designs added 2026-04 for pmaxframe).
+const VALID_RESOURCES = ["designs", "brand_kits", "pmax_designs"];
 
 serve(async (req) => {
     if (req.method === "OPTIONS") {
