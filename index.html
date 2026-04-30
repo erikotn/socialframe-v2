@@ -684,120 +684,130 @@
             ctx.textBaseline = 'alphabetic';
         }
 
-        // ============== PREVIEW COMPONENTS ==============
-        function PreviewHeader({ content, style, platform }) {
-            return (
-                <div className="px-4 flex items-center gap-3 mb-3 flex-shrink-0">
-                    <div className={`w-10 h-10 bg-gray-200 overflow-hidden flex-shrink-0 ${platform.avatarShape === 'circle' ? 'rounded-full' : 'rounded-lg'}`}>
-                        {content.avatar && <img src={content.avatar.src} className="w-full h-full object-cover" />}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                        <h3 className={`text-sm font-semibold flex items-center gap-1 ${style.darkMode ? 'text-white' : 'text-black'}`}>
-                            <span className="truncate">{content.name}</span>
-                            {content.verified && <span className="flex-shrink-0"><Icons.Verified /></span>}
-                        </h3>
-                        <p className="text-[10px] text-gray-400">{platform.sponsorLabel} • 2u</p>
-                    </div>
-                    <div className={style.darkMode ? 'text-white' : 'text-black'}>...</div>
-                </div>
-            );
-        }
+        // ============== STANDALONE renderToCanvas ==============
+        // Pure function: same input → same canvas. Used voor zowel preview als download
+        // zodat WYSIWYG gegarandeerd is (eerder dreven preview en export uit elkaar).
+        async function renderToCanvas({ platformId, formatId, content, style, darkMode }) {
+            const usePlatform = PLATFORMS[platformId];
+            const useFormat = FORMATS[formatId];
+            const useDarkMode = darkMode ?? style.darkMode;
 
-        function PreviewFeedCTA({ content, style, platform, metrics }) {
-            const bs = platform.buttonStyle;
-            const btnStyle = {
-                background: bs.bg === 'transparent' ? 'transparent' : bs.bg,
-                color: bs.text,
-                border: bs.border !== 'transparent' ? `1px solid ${bs.border}` : 'none'
+            const scale = 2;
+            const phoneW_orig = style.phoneWidth;
+            const m = computeMetrics({
+                platform: usePlatform, format: useFormat, content,
+                phoneW: phoneW_orig, sliderH: style.phoneHeight,
+            });
+            const phoneH_orig = m.phoneHeight;
+            const imgH_orig = m.imgHeight;
+
+            const phoneW = phoneW_orig * scale;
+            const phoneH = phoneH_orig * scale;
+            const pad = style.padding * scale;
+            const canvasW = phoneW + pad * 2;
+            const canvasH = phoneH + pad * 2;
+
+            const canvas = document.createElement('canvas');
+            canvas.width = canvasW;
+            canvas.height = canvasH;
+            const ctx = canvas.getContext('2d');
+
+            if (style.bgType === 'solid') {
+                ctx.fillStyle = style.bgColor1;
+                ctx.fillRect(0, 0, canvasW, canvasH);
+            } else if (style.bgType === 'gradient') {
+                const grd = ctx.createLinearGradient(0, 0, canvasW, canvasH);
+                grd.addColorStop(0, style.bgColor1);
+                grd.addColorStop(1, style.bgColor2);
+                ctx.fillStyle = grd;
+                ctx.fillRect(0, 0, canvasW, canvasH);
+            } else {
+                ctx.clearRect(0, 0, canvasW, canvasH);
+            }
+
+            const phoneX = pad, phoneY = pad;
+            const radius = 40 * scale;
+
+            if (style.deviceFrame === 'shadow') {
+                ctx.shadowColor = 'rgba(0,0,0,0.3)';
+                ctx.shadowBlur = 40 * scale;
+                ctx.shadowOffsetY = 20 * scale;
+            }
+
+            ctx.fillStyle = useDarkMode ? '#000' : '#fff';
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(phoneX, phoneY, phoneW, phoneH, radius);
+            else ctx.rect(phoneX, phoneY, phoneW, phoneH);
+            ctx.fill();
+
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
+            ctx.shadowOffsetY = 0;
+
+            if (style.deviceFrame === 'outline') {
+                ctx.lineWidth = 1.5 * scale;
+                ctx.strokeStyle = '#d4d4d8';
+                ctx.stroke();
+            }
+
+            ctx.save();
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(phoneX, phoneY, phoneW, phoneH, radius);
+            else ctx.rect(phoneX, phoneY, phoneW, phoneH);
+            ctx.clip();
+
+            const fontBold = (sz) => `600 ${sz * scale}px "Inter", sans-serif`;
+            const fontReg = (sz) => `400 ${sz * scale}px "Inter", sans-serif`;
+
+            ctx.fillStyle = (usePlatform.layout === 'story' || useDarkMode) ? '#fff' : '#000';
+            ctx.font = fontBold(12);
+            ctx.fillText('12:00', phoneX + 30 * scale, phoneY + 30 * scale);
+
+            const safeX = phoneX + 20 * scale;
+            const safeW = phoneW - 40 * scale;
+            const currentY = phoneY + 50 * scale;
+
+            const renderArgs = {
+                scale, phoneX, phoneY, phoneW, phoneH, safeX, safeW, currentY,
+                content, style, platform: usePlatform, darkMode: useDarkMode,
+                imgH: imgH_orig * scale, fontBold, fontReg,
             };
-            return (
-                <div className="pt-12 flex flex-col h-full relative">
-                    <PreviewHeader content={content} style={style} platform={platform} />
-                    <div className={`px-4 mb-3 text-sm ${style.darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                        <p className="whitespace-pre-wrap leading-snug">{content.text}</p>
-                    </div>
-                    <div className="flex flex-col flex-grow">
-                        <div className="w-full bg-gray-100 relative flex-shrink-0" style={{ height: `${metrics.imgHeight}px` }}>
-                            {content.mainImage ? <img src={content.mainImage.src} className="w-full h-full object-cover" /> : <div className="absolute inset-0 flex items-center justify-center text-gray-400 bg-gray-800">No Image</div>}
-                        </div>
-                        <div className={`px-4 h-[70px] flex-shrink-0 ${style.darkMode ? 'bg-dark-700' : 'bg-gray-100'} flex items-center justify-between gap-3`}>
-                            <div className="flex-1 min-w-0">
-                                <p className={`text-xs font-bold truncate ${style.darkMode ? 'text-white' : 'text-black'}`}>{content.headline}</p>
-                                <p className="text-[10px] text-gray-500 truncate">{content.url}</p>
-                            </div>
-                            <div className="flex-shrink-0 px-3 py-1.5 rounded text-[10px] font-bold whitespace-nowrap" style={btnStyle}>
-                                {content.buttonText}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            );
+
+            if (usePlatform.layout === 'feed-cta') await renderFeedCTA(ctx, renderArgs);
+            else if (usePlatform.layout === 'feed-icons') await renderFeedIcons(ctx, renderArgs);
+            else if (usePlatform.layout === 'story') await renderStory(ctx, renderArgs);
+
+            ctx.restore();
+
+            const notchW = 100 * scale, notchH = 25 * scale;
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            if (ctx.roundRect) ctx.roundRect(phoneX + (phoneW - notchW) / 2, phoneY + 10 * scale, notchW, notchH, 12 * scale);
+            else ctx.rect(phoneX + (phoneW - notchW) / 2, phoneY + 10 * scale, notchW, notchH);
+            ctx.fill();
+
+            return canvas;
         }
 
-        function PreviewFeedIcons({ content, style, platform, metrics }) {
-            return (
-                <div className="pt-12 flex flex-col h-full relative">
-                    <PreviewHeader content={content} style={style} platform={platform} />
-                    <div className="w-full bg-gray-100 relative flex-shrink-0" style={{ height: `${metrics.imgHeight}px` }}>
-                        {content.mainImage ? <img src={content.mainImage.src} className="w-full h-full object-cover" /> : <div className="absolute inset-0 flex items-center justify-center text-gray-400 bg-gray-800">No Image</div>}
-                    </div>
-                    <div className={`flex-1 px-4 py-3 ${style.darkMode ? 'text-white' : 'text-black'}`}>
-                        <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center gap-3">
-                                <Icons.Heart />
-                                <Icons.Comment />
-                                <Icons.Share />
-                            </div>
-                            <Icons.Bookmark />
-                        </div>
-                        <p className="text-xs font-semibold mb-1">{(content.likes ?? 0).toLocaleString('nl-NL')} vind-ik-leuks</p>
-                        <p className="text-xs leading-snug">
-                            <span className="font-semibold">{content.name}</span> {content.text}
-                        </p>
-                        {(content.comments ?? 0) > 0 && (
-                            <p className="text-[11px] text-gray-500 mt-1">Bekijk alle {content.comments} reacties</p>
-                        )}
-                    </div>
-                </div>
-            );
-        }
+        // ============== PREVIEW (canvas → image) ==============
+        // Re-rendert canvas op elke state-change; toont resultaat als <img>.
+        // Garandeert dat preview === export (geen drift mogelijk).
+        function CanvasPreview({ platformId, formatId, content, style }) {
+            const [src, setSrc] = useState(null);
+            useEffect(() => {
+                let cancelled = false;
+                (async () => {
+                    try {
+                        const canvas = await renderToCanvas({ platformId, formatId, content, style });
+                        if (cancelled) return;
+                        setSrc(canvas.toDataURL('image/png'));
+                    } catch (e) { console.error('Preview render error:', e); }
+                })();
+                return () => { cancelled = true; };
+            }, [platformId, formatId, content, style]);
 
-        function PreviewStory({ content, style, platform }) {
-            const bs = platform.buttonStyle;
-            const btnStyle = {
-                background: bs.bg === 'transparent' ? '#fff' : bs.bg,
-                color: bs.text,
-            };
-            return (
-                <div className="h-full relative w-full flex flex-col">
-                    <div className="absolute inset-0 bg-gray-800">
-                        {content.mainImage && <img src={content.mainImage.src} className="w-full h-full object-cover" />}
-                        <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/80 to-transparent"></div>
-                    </div>
-                    <div className="relative z-10 pt-12 px-4 flex items-center gap-2">
-                        <div className={`w-8 h-8 border border-white/20 bg-gray-200 overflow-hidden ${platform.avatarShape === 'circle' ? 'rounded-full' : 'rounded-lg'}`}>
-                            {content.avatar && <img src={content.avatar.src} className="w-full h-full object-cover" />}
-                        </div>
-                        <div className="text-white">
-                            <div className="text-sm font-semibold drop-shadow-md flex items-center gap-1">
-                                {content.name}
-                                {content.verified && <Icons.Verified />}
-                            </div>
-                            <div className="text-[10px] opacity-85 drop-shadow-md">{platform.sponsorLabel}</div>
-                        </div>
-                    </div>
-                    <div className="mt-auto relative z-10 px-4 pb-4 flex flex-col gap-3 text-white">
-                        <div className="self-end flex flex-col items-center gap-4 mb-2">
-                            <div className="flex flex-col items-center"><Icons.Heart /><span className="text-[10px] mt-0.5">{(content.likes ?? 0).toLocaleString('nl-NL')}</span></div>
-                            <div className="flex flex-col items-center"><Icons.Comment /><span className="text-[10px] mt-0.5">{content.comments}</span></div>
-                            <div className="flex flex-col items-center"><Icons.Share /><span className="text-[10px] mt-0.5">{content.shares}</span></div>
-                        </div>
-                        <button className="w-full py-2 rounded-md text-sm font-bold" style={btnStyle}>
-                            {content.buttonText}
-                        </button>
-                    </div>
-                </div>
-            );
+            if (!src) return <div className="text-gray-500 text-sm">Mockup wordt opgebouwd…</div>;
+            return <img src={src} className="max-w-full max-h-full" alt="Mockup preview" />;
         }
 
         // ============== PASSWORD GATE ==============
@@ -1053,124 +1063,12 @@
                 } catch (err) { alert('Verwijderen mislukt: ' + err.message); }
             };
 
-            // Layout metrics for current preview
-            const metrics = useMemo(() =>
-                computeMetrics({ platform, format, content, phoneW: style.phoneWidth, sliderH: style.phoneHeight }),
-                [platform, format, content, style.phoneWidth, style.phoneHeight]
-            );
-
-            // Render to canvas (parameterized for batch)
-            const renderToCanvas = useCallback(async (opts = {}) => {
-                const usePlatform = PLATFORMS[opts.platformId ?? platformId];
-                const useFormat = FORMATS[opts.formatId ?? formatId];
-                const useDarkMode = opts.darkMode ?? style.darkMode;
-
-                const scale = 2;
-                const phoneW_orig = style.phoneWidth;
-                const m = computeMetrics({
-                    platform: usePlatform, format: useFormat, content,
-                    phoneW: phoneW_orig, sliderH: style.phoneHeight
-                });
-                const phoneH_orig = m.phoneHeight;
-                const imgH_orig = m.imgHeight;
-
-                const phoneW = phoneW_orig * scale;
-                const phoneH = phoneH_orig * scale;
-                const pad = style.padding * scale;
-                const canvasW = phoneW + pad * 2;
-                const canvasH = phoneH + pad * 2;
-
-                const canvas = document.createElement('canvas');
-                canvas.width = canvasW;
-                canvas.height = canvasH;
-                const ctx = canvas.getContext('2d');
-
-                // Background
-                if (style.bgType === 'solid') {
-                    ctx.fillStyle = style.bgColor1;
-                    ctx.fillRect(0, 0, canvasW, canvasH);
-                } else if (style.bgType === 'gradient') {
-                    const grd = ctx.createLinearGradient(0, 0, canvasW, canvasH);
-                    grd.addColorStop(0, style.bgColor1);
-                    grd.addColorStop(1, style.bgColor2);
-                    ctx.fillStyle = grd;
-                    ctx.fillRect(0, 0, canvasW, canvasH);
-                } else {
-                    ctx.clearRect(0, 0, canvasW, canvasH);
-                }
-
-                const phoneX = pad, phoneY = pad;
-                const radius = 40 * scale;
-
-                if (style.deviceFrame === 'shadow') {
-                    ctx.shadowColor = 'rgba(0,0,0,0.3)';
-                    ctx.shadowBlur = 40 * scale;
-                    ctx.shadowOffsetY = 20 * scale;
-                }
-
-                ctx.fillStyle = useDarkMode ? '#000' : '#fff';
-                ctx.beginPath();
-                if (ctx.roundRect) ctx.roundRect(phoneX, phoneY, phoneW, phoneH, radius);
-                else ctx.rect(phoneX, phoneY, phoneW, phoneH);
-                ctx.fill();
-
-                ctx.shadowColor = 'transparent';
-                ctx.shadowBlur = 0;
-                ctx.shadowOffsetY = 0;
-
-                if (style.deviceFrame === 'outline') {
-                    ctx.lineWidth = 1.5 * scale;
-                    ctx.strokeStyle = '#d4d4d8';
-                    ctx.stroke();
-                }
-
-                // Clip to phone
-                ctx.save();
-                ctx.beginPath();
-                if (ctx.roundRect) ctx.roundRect(phoneX, phoneY, phoneW, phoneH, radius);
-                else ctx.rect(phoneX, phoneY, phoneW, phoneH);
-                ctx.clip();
-
-                const fontBold = (sz) => `600 ${sz * scale}px "Inter", sans-serif`;
-                const fontReg = (sz) => `400 ${sz * scale}px "Inter", sans-serif`;
-
-                // Status bar time
-                ctx.fillStyle = (usePlatform.layout === 'story' || useDarkMode) ? '#fff' : '#000';
-                ctx.font = fontBold(12);
-                ctx.fillText('12:00', phoneX + 30 * scale, phoneY + 30 * scale);
-
-                const safeX = phoneX + 20 * scale;
-                const safeW = phoneW - 40 * scale;
-                const currentY = phoneY + 50 * scale;
-
-                const renderArgs = {
-                    scale, phoneX, phoneY, phoneW, phoneH, safeX, safeW, currentY,
-                    content, style, platform: usePlatform, darkMode: useDarkMode,
-                    imgH: imgH_orig * scale, fontBold, fontReg
-                };
-
-                if (usePlatform.layout === 'feed-cta') await renderFeedCTA(ctx, renderArgs);
-                else if (usePlatform.layout === 'feed-icons') await renderFeedIcons(ctx, renderArgs);
-                else if (usePlatform.layout === 'story') await renderStory(ctx, renderArgs);
-
-                ctx.restore();
-
-                // Notch
-                const notchW = 100 * scale, notchH = 25 * scale;
-                ctx.fillStyle = '#000';
-                ctx.beginPath();
-                if (ctx.roundRect) ctx.roundRect(phoneX + (phoneW - notchW) / 2, phoneY + 10 * scale, notchW, notchH, 12 * scale);
-                else ctx.rect(phoneX + (phoneW - notchW) / 2, phoneY + 10 * scale, notchW, notchH);
-                ctx.fill();
-
-                return canvas;
-            }, [platformId, formatId, content, style]);
-
+            // Single-shot PNG download — gebruikt dezelfde renderToCanvas als de preview
             const generateCanvas = async () => {
                 setLoading(true);
                 await new Promise(r => setTimeout(r, 50));
                 try {
-                    const canvas = await renderToCanvas();
+                    const canvas = await renderToCanvas({ platformId, formatId, content, style });
                     canvas.toBlob((blob) => {
                         saveAs(blob, `${content.name.replace(/\s/g, '_')}_${platformId}_${formatId}.png`);
                         setLoading(false);
@@ -1202,7 +1100,7 @@
                         for (const m of modes) {
                             try {
                                 const canvas = await renderToCanvas({
-                                    platformId: p, formatId: f, darkMode: m === 'dark'
+                                    platformId: p, formatId: f, content, style, darkMode: m === 'dark',
                                 });
                                 const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
                                 zip.file(`${content.name.replace(/\s/g, '_')}_${p}_${f}_${m}.png`, blob);
@@ -1520,25 +1418,7 @@
                         onDragLeave={() => setDropping(false)}
                         onDrop={handleDrop}
                     >
-                        <div className="relative shadow-2xl"
-                            style={{
-                                padding: style.bgType === 'transparent' ? 0 : `${style.padding}px`,
-                                background: style.bgType === 'transparent' ? 'transparent' : (style.bgType === 'solid' ? style.bgColor1 : `linear-gradient(135deg, ${style.bgColor1}, ${style.bgColor2})`)
-                            }}>
-                            <div className={`relative overflow-hidden ${style.darkMode ? 'bg-black' : 'bg-white'} rounded-[40px]`}
-                                style={{
-                                    width: `${style.phoneWidth}px`,
-                                    height: `${metrics.phoneHeight}px`,
-                                    boxShadow: style.deviceFrame === 'shadow' ? '0 20px 40px rgba(0,0,0,0.3)' : 'none',
-                                    border: style.deviceFrame === 'outline' ? '1.5px solid #d4d4d8' : 'none'
-                                }}>
-                                <div className="absolute top-2 left-1/2 -translate-x-1/2 w-24 h-6 bg-black rounded-full z-20"></div>
-
-                                {platform.layout === 'feed-cta' && <PreviewFeedCTA content={content} style={style} platform={platform} metrics={metrics} />}
-                                {platform.layout === 'feed-icons' && <PreviewFeedIcons content={content} style={style} platform={platform} metrics={metrics} />}
-                                {platform.layout === 'story' && <PreviewStory content={content} style={style} platform={platform} />}
-                            </div>
-                        </div>
+                        <CanvasPreview platformId={platformId} formatId={formatId} content={content} style={style} />
                     </main>
                 </div>
             );
