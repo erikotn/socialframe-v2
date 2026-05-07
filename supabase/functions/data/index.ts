@@ -46,10 +46,17 @@ const json = (body: unknown, status = 200) =>
 const VALID_RESOURCES = ["designs", "brand_kits", "pmax_designs", "designs_v3"];
 
 // Public actions slaan de password-check over — bedoeld voor share-URLs
-// waarmee een collega zonder login een foto kan uploaden voor één specifieke
-// mockup. Beveiliging zit in de unguessable share_token en het feit dat deze
-// acties alleen díé ene rij raken.
-const PUBLIC_ACTIONS = new Set(["share-get-design", "share-set-image"]);
+// waarmee een collega zonder login een foto kan uploaden.
+// Beveiliging zit in de unguessable share_token.
+//   - share-get-design / share-set-image: per-mockup share (één design)
+//   - share-get-run / share-set-image-by-run: run-level share (alle mockups
+//     in één bulk-run via één gedeelde token)
+const PUBLIC_ACTIONS = new Set([
+    "share-get-design",
+    "share-set-image",
+    "share-get-run",
+    "share-set-image-by-run",
+]);
 
 serve(async (req) => {
     if (req.method === "OPTIONS") {
@@ -82,6 +89,57 @@ serve(async (req) => {
         }
 
         try {
+            // === RUN-LEVEL SHARE (één link voor alle mockups in een bulk-run) ===
+            if (action === "share-get-run" || action === "share-set-image-by-run") {
+                const { data: rows, error: lookupErr } = await supabase
+                    .from("designs_v3")
+                    .select("id, content, style, platform_id, format_id, run_share_expires_at, awaiting_photo, bulk_run_label, bulk_run_id")
+                    .eq("run_share_token", token);
+                if (lookupErr) throw lookupErr;
+                if (!rows || rows.length === 0) return json({ error: "Token not found" }, 404);
+
+                const expiresAt = rows[0].run_share_expires_at;
+                if (expiresAt && new Date(expiresAt) < new Date()) {
+                    return json({ error: "Share link verlopen" }, 410);
+                }
+
+                if (action === "share-get-run") {
+                    return json({
+                        bulk_run_label: rows[0].bulk_run_label,
+                        designs: rows.map((d) => ({
+                            id: d.id,
+                            content: d.content,
+                            style: d.style,
+                            platform_id: d.platform_id,
+                            format_id: d.format_id,
+                            awaiting_photo: d.awaiting_photo,
+                        })),
+                    });
+                }
+
+                // share-set-image-by-run: verify design_id is in this run
+                const designId = (payload as { design_id?: string }).design_id;
+                const imageData = (payload as { imageData?: unknown }).imageData;
+                if (!designId) return json({ error: "design_id required" }, 400);
+                if (!imageData || typeof imageData !== "object") {
+                    return json({ error: "imageData required" }, 400);
+                }
+                const target = rows.find((r) => r.id === designId);
+                if (!target) return json({ error: "design_id not in this run" }, 403);
+                const updatedContent = {
+                    ...(target.content as Record<string, unknown>),
+                    mainImage: imageData,
+                };
+                const { error: updErr } = await supabase
+                    .from("designs_v3")
+                    .update({ content: updatedContent, awaiting_photo: false })
+                    .eq("id", designId)
+                    .eq("run_share_token", token);
+                if (updErr) throw updErr;
+                return json({ ok: true });
+            }
+
+            // === PER-MOCKUP SHARE ===
             // Lookup mockup by token + check expiry
             const { data: design, error: lookupErr } = await supabase
                 .from("designs_v3")
@@ -95,7 +153,6 @@ serve(async (req) => {
             }
 
             if (action === "share-get-design") {
-                // Return only what's needed for client-side render — no other rows
                 return json({
                     id: design.id,
                     content: design.content,
@@ -112,8 +169,6 @@ serve(async (req) => {
                 if (!imageData || typeof imageData !== "object") {
                     return json({ error: "imageData required" }, 400);
                 }
-                // Merge mainImage into the existing content blob; do not allow
-                // overwriting any other field.
                 const updatedContent = {
                     ...(design.content as Record<string, unknown>),
                     mainImage: imageData,
