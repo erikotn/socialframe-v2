@@ -45,6 +45,12 @@ const json = (body: unknown, status = 200) =>
 //   - designs_v3 added 2026-05 voor socialframe-v3 (bulk-feature)
 const VALID_RESOURCES = ["designs", "brand_kits", "pmax_designs", "designs_v3"];
 
+// Public actions slaan de password-check over — bedoeld voor share-URLs
+// waarmee een collega zonder login een foto kan uploaden voor één specifieke
+// mockup. Beveiliging zit in de unguessable share_token en het feit dat deze
+// acties alleen díé ene rij raken.
+const PUBLIC_ACTIONS = new Set(["share-get-design", "share-set-image"]);
+
 serve(async (req) => {
     if (req.method === "OPTIONS") {
         return new Response("ok", { headers: corsHeaders });
@@ -58,11 +64,6 @@ serve(async (req) => {
         );
     }
 
-    const password = req.headers.get("x-password");
-    if (!password || password !== SHARED_PASSWORD) {
-        return json({ error: "Unauthorized" }, 401);
-    }
-
     let body: { resource?: string; action?: string; payload?: unknown };
     try {
         body = await req.json();
@@ -71,6 +72,72 @@ serve(async (req) => {
     }
 
     const { resource, action, payload } = body;
+
+    // Public share-actions: skip password gate, but still require a valid token
+    if (action && PUBLIC_ACTIONS.has(action)) {
+        const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+        const token = (payload as { share_token?: string })?.share_token;
+        if (!token || typeof token !== "string" || token.length < 16) {
+            return json({ error: "Invalid share token" }, 400);
+        }
+
+        try {
+            // Lookup mockup by token + check expiry
+            const { data: design, error: lookupErr } = await supabase
+                .from("designs_v3")
+                .select("id, content, style, platform_id, format_id, share_expires_at, awaiting_photo, bulk_run_label")
+                .eq("share_token", token)
+                .maybeSingle();
+            if (lookupErr) throw lookupErr;
+            if (!design) return json({ error: "Token not found" }, 404);
+            if (design.share_expires_at && new Date(design.share_expires_at) < new Date()) {
+                return json({ error: "Share link verlopen" }, 410);
+            }
+
+            if (action === "share-get-design") {
+                // Return only what's needed for client-side render — no other rows
+                return json({
+                    id: design.id,
+                    content: design.content,
+                    style: design.style,
+                    platform_id: design.platform_id,
+                    format_id: design.format_id,
+                    awaiting_photo: design.awaiting_photo,
+                    bulk_run_label: design.bulk_run_label,
+                });
+            }
+
+            if (action === "share-set-image") {
+                const imageData = (payload as { imageData?: unknown }).imageData;
+                if (!imageData || typeof imageData !== "object") {
+                    return json({ error: "imageData required" }, 400);
+                }
+                // Merge mainImage into the existing content blob; do not allow
+                // overwriting any other field.
+                const updatedContent = {
+                    ...(design.content as Record<string, unknown>),
+                    mainImage: imageData,
+                };
+                const { error: updErr } = await supabase
+                    .from("designs_v3")
+                    .update({ content: updatedContent, awaiting_photo: false })
+                    .eq("share_token", token);
+                if (updErr) throw updErr;
+                return json({ ok: true });
+            }
+            return json({ error: "Unknown public action" }, 400);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return json({ error: msg }, 500);
+        }
+    }
+
+    // Private actions: require team password
+    const password = req.headers.get("x-password");
+    if (!password || password !== SHARED_PASSWORD) {
+        return json({ error: "Unauthorized" }, 401);
+    }
+
     if (!resource || !VALID_RESOURCES.includes(resource)) {
         return json({ error: "Unknown resource" }, 400);
     }
@@ -104,6 +171,15 @@ serve(async (req) => {
             const { error } = await supabase.from(resource).delete().eq("id", id);
             if (error) throw error;
             return json({ ok: true });
+        }
+        if (action === "delete-many") {
+            const ids = (payload as { ids?: string[] })?.ids;
+            if (!Array.isArray(ids) || ids.length === 0) {
+                return json({ error: "ids required" }, 400);
+            }
+            const { error } = await supabase.from(resource).delete().in("id", ids);
+            if (error) throw error;
+            return json({ ok: true, count: ids.length });
         }
         return json({ error: "Unknown action" }, 400);
     } catch (err) {
