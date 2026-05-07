@@ -40,8 +40,10 @@ const json = (body: unknown, status = 200) =>
     });
 
 // Tables that this gated proxy is allowed to read/write.
-// Add new tools here as the platform grows (pmax_designs added 2026-04 for pmaxframe).
-const VALID_RESOURCES = ["designs", "brand_kits", "pmax_designs"];
+// Add new tools here as the platform grows.
+//   - pmax_designs added 2026-04 voor pmaxframe
+//   - designs_v3 added 2026-05 voor socialframe-v3 (bulk-feature)
+const VALID_RESOURCES = ["designs", "brand_kits", "pmax_designs", "designs_v3"];
 
 serve(async (req) => {
     if (req.method === "OPTIONS") {
