@@ -118,21 +118,29 @@ serve(async (req) => {
                 }
 
                 // share-set-image-by-run: verify design_id is in this run
+                // imageData = null/undefined betekent CLEAR (terug naar placeholder)
                 const designId = (payload as { design_id?: string }).design_id;
                 const imageData = (payload as { imageData?: unknown }).imageData;
                 if (!designId) return json({ error: "design_id required" }, 400);
-                if (!imageData || typeof imageData !== "object") {
+                const clearMode = imageData === null || imageData === undefined;
+                if (!clearMode && typeof imageData !== "object") {
                     return json({ error: "imageData required" }, 400);
                 }
                 const target = rows.find((r) => r.id === designId);
                 if (!target) return json({ error: "design_id not in this run" }, 403);
+                const c = target.content as { imageDescription?: string; imageText?: string };
+                const hasBriefing = !!((c?.imageDescription && c.imageDescription.trim())
+                    || (c?.imageText && c.imageText.trim()));
                 const updatedContent = {
                     ...(target.content as Record<string, unknown>),
-                    mainImage: imageData,
+                    mainImage: clearMode ? null : imageData,
                 };
                 const { error: updErr } = await supabase
                     .from("designs_v3")
-                    .update({ content: updatedContent, awaiting_photo: false })
+                    .update({
+                        content: updatedContent,
+                        awaiting_photo: clearMode ? hasBriefing : false,
+                    })
                     .eq("id", designId)
                     .eq("run_share_token", token);
                 if (updErr) throw updErr;
@@ -165,17 +173,25 @@ serve(async (req) => {
             }
 
             if (action === "share-set-image") {
+                // imageData = null/undefined betekent CLEAR (terug naar placeholder)
                 const imageData = (payload as { imageData?: unknown }).imageData;
-                if (!imageData || typeof imageData !== "object") {
+                const clearMode = imageData === null || imageData === undefined;
+                if (!clearMode && typeof imageData !== "object") {
                     return json({ error: "imageData required" }, 400);
                 }
+                const c = design.content as { imageDescription?: string; imageText?: string };
+                const hasBriefing = !!((c?.imageDescription && c.imageDescription.trim())
+                    || (c?.imageText && c.imageText.trim()));
                 const updatedContent = {
                     ...(design.content as Record<string, unknown>),
-                    mainImage: imageData,
+                    mainImage: clearMode ? null : imageData,
                 };
                 const { error: updErr } = await supabase
                     .from("designs_v3")
-                    .update({ content: updatedContent, awaiting_photo: false })
+                    .update({
+                        content: updatedContent,
+                        awaiting_photo: clearMode ? hasBriefing : false,
+                    })
                     .eq("share_token", token);
                 if (updErr) throw updErr;
                 return json({ ok: true });
